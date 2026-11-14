@@ -89,7 +89,8 @@ export const TEXT_FIELDS = {
     "must_have",
     "deal_breaker"
   ],
-  area: ["area_label", "anchor"],
+  area: ["area_label", "anchor", "pop_net_inflow", "avg_income", "cre_report"],
+  property: ["property_code", "community_name", "floor_note", "product_type", "agent_company", "branch_label", "agent_alias", "source_note"],
   agent: ["brand", "branch_label", "agent_alias"],
   travel: ["place_alias", "minutes_to_area", "minutes_back"]
 };
@@ -117,6 +118,12 @@ export function scanImportForPii(data) {
   if (Array.isArray(data.agents)) {
     data.agents.forEach((a, i) => {
       for (const k of TEXT_FIELDS.agent) check(a[k], `agents[${i}].${k}`);
+    });
+  }
+  if (Array.isArray(data.properties)) {
+    data.properties.forEach((a, i) => {
+      if (!a || typeof a !== "object") return;
+      for (const k of TEXT_FIELDS.property) check(a[k], `properties[${i}].${k}`);
     });
   }
   if (Array.isArray(data.travel)) {

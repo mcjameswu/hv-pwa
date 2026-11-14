@@ -1,4 +1,4 @@
-const CACHE = "house-app-v1.15.0";
+const CACHE = "house-app-v1.17.1";
 const ASSETS = [
   "./",
   "./index.html",
@@ -43,7 +43,14 @@ const ASSETS = [
   "./js/items-for-viewing.js",
   "./js/rank-eligible.js",
   "./js/zip.js",
-  "./js/ui-logic.js"
+  "./js/ui-logic.js",
+  "./js/notes-import.js",
+  "./js/notes-export.js",
+  "./js/import-file.js",
+  "./js/ui-flow.js",
+  "./js/coach.js",
+  "./js/price-log.js",
+  "./js/sites.js"
 ];
 
 self.addEventListener("install", (e) => {

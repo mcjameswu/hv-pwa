@@ -1,4 +1,4 @@
-import { SHEET_COLUMNS, NUMBER_FIELDS, LEGACY_SHEET_TITLES } from "./defaults.js";
+import { SHEET_COLUMNS, NUMBER_FIELDS, LEGACY_SHEET_TITLES, LEGACY_SHEET_WIDTHS } from "./defaults.js";
 import { mergeDataset } from "./merge.js";
 import { parseNumberForKey } from "./fields.js";
 
@@ -62,13 +62,16 @@ export function parseSheetCsv(sheetKey, text) {
   const codes = rows[1].map((c) => String(c).trim());
   const expectedTitles = spec.map((x) => x[0]);
   const expectedCodes = spec.map((x) => x[1]);
-  if (titles.length !== expectedTitles.length || codes.length !== expectedCodes.length) {
+  // 第 12 輪起區域分頁多了四欄；只缺這四欄的舊範本（前面的欄位完全相同）仍然接受，其他欄數一律拒收
+  const legacyWidth = LEGACY_SHEET_WIDTHS[sheetKey];
+  const width = titles.length === legacyWidth && codes.length === legacyWidth ? legacyWidth : expectedTitles.length;
+  if (titles.length !== width || codes.length !== width) {
     return {
       ok: false,
       errors: [{ message: "第 1 列標題被刪或欄位順序被改，程式拒收而不是錯位匯入" }]
     };
   }
-  for (let i = 0; i < expectedTitles.length; i++) {
+  for (let i = 0; i < width; i++) {
     const legacyOk = (LEGACY_SHEET_TITLES[expectedCodes[i]] || []).includes(titles[i]);
     if ((titles[i] !== expectedTitles[i] && !legacyOk) || codes[i] !== expectedCodes[i]) {
       return {
@@ -85,7 +88,7 @@ export function parseSheetCsv(sheetKey, text) {
   }
   // 任何資料列在預期欄數之後還有內容，表示欄位順序或欄數被改過，安全失敗
   for (let r = 2; r < rows.length; r++) {
-    const extra = rows[r].slice(expectedCodes.length).some((cell) => String(cell).trim() !== "");
+    const extra = rows[r].slice(width).some((cell) => String(cell).trim() !== "");
     if (extra) {
       return { ok: false, errors: [{ message: `第 ${r + 1} 列多出欄位，請確認沒有改動欄位順序，已拒收` }] };
     }
@@ -93,14 +96,15 @@ export function parseSheetCsv(sheetKey, text) {
   const records = [];
   for (let r = 2; r < rows.length; r++) {
     const obj = {};
-    for (let c = 0; c < expectedCodes.length; c++) {
+    for (let c = 0; c < width; c++) {
       const key = expectedCodes[c];
       let val = rows[r][c] === undefined ? "" : String(rows[r][c]).trim();
       if (val === "") {
         obj[key] = undefined;
         continue;
       }
-      if (NUMBER_FIELDS.has(key)) {
+      // 待看物件分頁的數字不在這裡解析：壞值要讓那一列標待核、其他列照常匯入，由匯入計畫逐列驗證（第 12 輪 S1）
+      if (NUMBER_FIELDS.has(key) && sheetKey !== "properties") {
         // 依欄位的單位解析：萬元金額收「1500萬」，元金額收「3千」，其餘欄位只收純數字（F9-05）
         const parsed = parseNumberForKey(key, val);
         if (parsed.state !== "ok" || !Number.isFinite(parsed.value)) {
@@ -145,6 +149,7 @@ export function sheetsToImportJson(parsed) {
   if (parsed.scoring) data.scoring = parsed.scoring[0] || {};
   if (parsed.agents) data.agents = parsed.agents;
   if (parsed.travel) data.travel = parsed.travel;
+  if (parsed.properties) data.properties = parsed.properties;
   return data;
 }
 
@@ -166,6 +171,7 @@ export function mergeWithCurrent(partial, current = {}) {
     scoring: merged.scoring,
     agents: merged.agents,
     travel: merged.travel,
+    ...(partial.properties !== undefined ? { properties: partial.properties } : {}),
     _importedKeys: merged._importedKeys
   };
 }

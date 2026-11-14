@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = "import_v1";
-export const APP_VERSION = "1.15.0";
-export const DB_VERSION = 7;
+export const APP_VERSION = "1.17.1";
+export const DB_VERSION = 8; // R13：新增口袋教練（coach）與問價紀錄（priceLog）兩張表，資料庫升到第 8 版
 
 export const FIELD_LABELS = {
   call_name: "草稿裡的稱呼",
@@ -60,7 +60,32 @@ export const FIELD_LABELS = {
   agent_alias: "主責仲介稱呼",
   place_alias: "地點代稱",
   commute_target: "強勢辦公區錨點代稱與上限分鐘",
-  commute_min: "本區到強勢辦公區分鐘"
+  commute_min: "本區到強勢辦公區分鐘",
+  area_code: "區域代號",
+  area_label: "區域名稱",
+  pop_net_inflow: "區段人口淨流入",
+  avg_income: "平均收入",
+  cre_report: "商業不動產報告重點與出處",
+  research_as_of: "區域功課查詢基準日",
+  property_code: "物件代號",
+  notes_status: "筆記裡的狀態",
+  community_name: "社區名稱",
+  ask_total: "開價(萬)",
+  ping_total: "登記總坪",
+  has_parking: "有無車位",
+  parking_included_in_ask: "車位是否含在開價",
+  parking_ping: "車位坪",
+  parking_price: "車位開價(萬)",
+  rooms: "房數",
+  baths: "衛浴數",
+  age: "屋齡(年)",
+  floor_note: "樓層備註",
+  mgmt_fee: "管理費(元/月)",
+  agent_company: "仲介公司",
+  planned_date: "預計看房日",
+  source_note: "來源備註",
+  notes_ref: "筆記頁代號",
+  notes_updated_at: "筆記最後更新時間"
 };
 
 /**
@@ -163,7 +188,8 @@ export const CSV_SHEETS = {
   D: "areas",
   E: "scoring",
   F: "agents",
-  G: "travel"
+  G: "travel",
+  H: "properties"
 };
 
 /** Row 1 Chinese titles and row 2 English codes, in order. Order change is rejected. */
@@ -241,7 +267,11 @@ export const SHEET_COLUMNS = {
     ["區域類型", "area_type"],
     ["優先順序", "priority"],
     ["錨點代稱", "anchor"],
-    ["步行分鐘半徑", "radius_min"]
+    ["步行分鐘半徑", "radius_min"],
+    ["區段人口淨流入", "pop_net_inflow"],
+    ["平均收入", "avg_income"],
+    ["商業不動產報告重點與出處", "cre_report"],
+    ["區域功課查詢基準日", "research_as_of"]
   ],
   scoring: [
     ["九項初篩權重", "w_screen"],
@@ -270,8 +300,39 @@ export const SHEET_COLUMNS = {
     ["到各目標區代號的去程分鐘", "minutes_to_area"],
     ["從各目標區回到本地點的分鐘", "minutes_back"],
     ["基準日", "as_of"]
+  ],
+  properties: [
+    ["物件代號", "property_code"],
+    ["筆記裡的狀態", "notes_status"],
+    ["區域代號", "area_code"],
+    ["社區名稱", "community_name"],
+    ["開價(萬)", "ask_total"],
+    ["登記總坪", "ping_total"],
+    ["有無車位", "has_parking"],
+    ["車位是否含在開價", "parking_included_in_ask"],
+    ["車位坪", "parking_ping"],
+    ["車位開價(萬)", "parking_price"],
+    ["房數", "rooms"],
+    ["屋齡(年)", "age"],
+    ["樓層備註", "floor_note"],
+    ["產品類型", "product_type"],
+    ["管理費(元/月)", "mgmt_fee"],
+    ["仲介公司", "agent_company"],
+    ["門店代稱", "branch_label"],
+    ["主責仲介稱呼", "agent_alias"],
+    ["預計看房日", "planned_date"],
+    ["來源備註", "source_note"],
+    ["筆記頁代號", "notes_ref"],
+    ["筆記最後更新時間", "notes_updated_at"],
+    ["衛浴數", "baths"]
   ]
 };
+
+/**
+ * 第 12 輪以前下載的範本欄數：區域分頁當時只有前 14 欄。只多出新欄位的舊範本仍接受（前 14 欄的標題與代號一個字都不能錯），
+ * 不讓使用者因為範本加了欄位就整張被拒收；其他任何欄數或順序不符仍然拒收。key 是分頁名稱，值是舊版的欄數。
+ */
+export const LEGACY_SHEET_WIDTHS = { areas: 14, properties: 22 };
 
 /**
  * 舊版範本的第 1 列標題（2026-11-14 以前下載的 CSV 與 Excel 範本）：改名後仍然接受，

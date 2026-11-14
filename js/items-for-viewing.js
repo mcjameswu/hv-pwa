@@ -99,10 +99,38 @@ export function itemsForViewing(state, viewing) {
   const sameId = viewing.method_pack_id && curId && viewing.method_pack_id === curId;
   const sameVer = viewing.method_pack_version && curVer && String(viewing.method_pack_version) === String(curVer);
   if (sameId && sameVer && current?.checklist) return current.checklist;
+  // 有方法包代號與版本、沒有雜湊也沒有快照的舊紀錄：方法包升版後，舊版仍留在登錄表，找得到同代號同版本的就用那一版（第 12 輪 S5）
+  if (viewing.method_pack_id && viewing.method_pack_version) {
+    const hit = (state?.methodPacks || []).find((p) => {
+      const pk = p?.pack;
+      return pk && (pk.meta?.id || pk.id) === viewing.method_pack_id && String(pk.meta?.version || pk.version) === String(viewing.method_pack_version);
+    });
+    if (hit?.pack?.checklist?.length) return hit.pack.checklist;
+  }
   // 只記了版本、沒有方法包代號的舊紀錄：版本和目前方法包相同，就視為同一套題目（F-R11-05）；版本不同仍當未知
   if (!viewing.method_pack_id && sameVer && current?.checklist) return current.checklist;
   if (!viewing.method_pack_id && !viewing.method_pack_version && current?.checklist) return current.checklist;
   return [];
+}
+
+/** 目前方法包的整份清單（教練的連結與「跳到某一題」用）；看房的題目仍然只准經 itemsForViewing 讀（第 13 輪）。 */
+export function packChecklist(state) {
+  return Array.isArray(state?.methodPack?.checklist) ? state.methodPack.checklist : [];
+}
+
+/**
+ * 畫面顯示用的題目：看房紀錄存的清單快照只留判分需要的欄位，沒有「怎麼查」「單位」「區域資料提示來源」。
+ * 目前方法包裡有同代號、同文字的題目，就把這幾個顯示用欄位補上（只補顯示，題目本身與判分一概不變）。
+ */
+export function displayItem(state, item) {
+  if (!item || typeof item !== "object") return item;
+  const cur = (state?.methodPack?.checklist || []).find((x) => x && x.id === item.id && x.text === item.text);
+  if (!cur) return item;
+  const out = { ...item };
+  for (const k of ["how_to_check", "unit", "prefill_from", "category"]) {
+    if (out[k] === undefined && cur[k] !== undefined) out[k] = cur[k];
+  }
+  return out;
 }
 
 /** 完全沒有任何版本資訊的舊紀錄：以目前方法包解讀，必須讓使用者知道。 */

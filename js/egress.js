@@ -11,12 +11,15 @@ import { agentDraft, partnerDrafts, PARTNER_BLANK, PARTNER_STAGES } from "./modu
 import { uniqueCounted } from "./counting.js";
 import { extractMoneyWan, sameWan } from "./chinese-num.js";
 import { buildUncompressedZip, stripJpegExif, jsonBytes } from "./zip.js";
+import { notesScanText } from "./notes-export.js";
+import { priceLogProblems } from "./price-log.js";
 
 export function recipientKind(recipient) {
   const r = String(recipient || "");
   if (r === "partner" || r === "共同決策人") return "partner";
   if (r === "agent" || r === "仲介") return "agent";
   if (r === "upload" || r === "上傳") return "upload";
+  if (r === "notes" || r === "筆記") return "notes";
   return "share";
 }
 
@@ -115,14 +118,24 @@ function stretchAmountHit(text, stretch) {
  * Build outbound text then run one scan. Clipboard/download must use returned text.
  * shareKind／uploadKind 規格分流：分享只含物件代號與分數；上傳包走白名單。
  */
-export function prepareOutbound({ recipient, kind, state = {}, userText, property, viewing, stage = "before" } = {}) {
+export function prepareOutbound({ recipient, kind, state = {}, userText, property, viewing, stage = "before", notesPayload } = {}) {
   const rcpt = recipientKind(kind || recipient);
   const stretch = stretchList(state);
   let text = userText;
   let source = "user";
   let systemNeedsFill = false;
+  let scanSource = null; // 要掃描的文字；沒指定就是要送出的文字本身
 
-  if (rcpt === "share") {
+  if (rcpt === "notes") {
+    // 給筆記：內容只來自白名單組好的 notesPayload（notes-export.js），不收使用者自己打的文字；
+    // 掃描時略過系統產生的代號與時間欄位，免得長得像數字的筆記頁代號害整份被擋
+    if (!notesPayload || typeof notesPayload !== "object" || Array.isArray(notesPayload)) {
+      return { ok: false, text: "", hits: [{ level: "block", field: "empty", rule: "empty_text" }], source: "system", recipient: rcpt };
+    }
+    text = JSON.stringify(notesPayload);
+    scanSource = notesScanText(notesPayload);
+    source = "system";
+  } else if (rcpt === "share") {
     text = systemShareText(state, property, viewing);
     source = "system";
   } else if (rcpt === "upload") {
@@ -151,20 +164,21 @@ export function prepareOutbound({ recipient, kind, state = {}, userText, propert
     return { ok: false, text: "", hits: [{ level: "block", field: "empty", rule: "empty_text" }], source, recipient: rcpt };
   }
 
+  const toScan = scanSource ?? text;
   const hits = [];
-  const pii = findPii(text);
+  const pii = findPii(toScan);
   if (pii) hits.push({ level: "block", field: "pii", writing: pii.match || pii, rule: "pii" });
 
   let stretchHit = null;
   if (rcpt !== "partner") {
-    stretchHit = stretchAmountHit(text, stretch);
+    stretchHit = stretchAmountHit(toScan, stretch);
     if (stretchHit) hits.push({ level: "block", field: "stretch", writing: stretchHit.writing, rule: "no_stretch_price" });
-    if (/請再幫我找/.test(text) && stretch.some((p) => mentionsId(text, p.id))) {
+    if (/請再幫我找/.test(toScan) && stretch.some((p) => mentionsId(toScan, p.id))) {
       hits.push({ level: "block", field: "stretch", rule: "no_stretch_find_more" });
     }
   }
 
-  const scan = scanDraft(text, {
+  const scan = scanDraft(toScan, {
     finance: state.finance || {},
     areas: state.areas || [],
     travel: state.travel || [],
@@ -173,6 +187,12 @@ export function prepareOutbound({ recipient, kind, state = {}, userText, propert
     stretchMentioned: rcpt === "partner" ? false : Boolean(stretchHit)
   });
   hits.push(...(scan.hits || []));
+  if (rcpt === "notes") {
+    // 問價紀錄的金額是分欄存的萬元數字，序列化後沒有單位，小於 100 的私密數字會漏掉：金額補回「N 萬」另外比對（F-R14-02）
+    for (const p of priceLogProblems(notesPayload, state.finance || {})) {
+      hits.push({ level: "block", field: "price_log", rule: p.amountHit ? "price_log_private_amount" : "price_log_private_text", property_code: p.property_code, date: p.date, kind: p.kind });
+    }
+  }
 
   const blocked = hits.filter((h) => h.level === "block");
   const ok = blocked.length === 0;
@@ -222,6 +242,48 @@ export function downloadOutbound(prepared, filename) {
   a.remove();
   URL.revokeObjectURL(url);
   return { ok: true, text: prepared.text, filename };
+}
+
+/**
+ * 把已通過出口閘門的「給筆記」檔案交出去（第 12 輪 S3）：手機支援分享檔案就開分享選單（使用者可以選雲端硬碟），
+ * 不支援就下載。只接受控制器 buildNotesExport 回傳、而且標記為 approved 的內容；沒有任何網路呼叫。
+ * 使用者在分享選單按取消不算失敗，也不會改成偷偷下載。
+ */
+export async function deliverNotesFile(pack, filename) {
+  if (!pack || pack.ok !== true || pack.approved !== true || pack.prepared?.ok !== true || pack.prepared.recipient !== "notes" || typeof pack.prepared.text !== "string" || pack.prepared.text !== pack.text) {
+    return { ok: false, error: "給筆記的內容沒有通過出口閘門，不能交出去" };
+  }
+  const name = filename || pack.filename || "看房同步.json";
+  const text = pack.prepared.text;
+  if (typeof navigator !== "undefined" && typeof navigator.share === "function" && typeof File === "function") {
+    for (const type of ["application/json", "text/plain"]) {
+      let file = null;
+      try {
+        file = new File([text], name, { type });
+        if (typeof navigator.canShare === "function" && !navigator.canShare({ files: [file] })) continue;
+      } catch {
+        continue;
+      }
+      try {
+        await navigator.share({ files: [file], title: name });
+        return { ok: true, method: "share", filename: name };
+      } catch (err) {
+        if (err && err.name === "AbortError") return { ok: false, cancelled: true, method: "share", filename: name };
+        break; // 分享出錯（例如這種檔案不支援）就改用下載
+      }
+    }
+  }
+  if (typeof document === "undefined") return { ok: true, method: "download", filename: name, skipped: true };
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return { ok: true, method: "download", filename: name };
 }
 
 /** 只接受已通過出口閘門、而且標記為 approved 的上傳包。 */

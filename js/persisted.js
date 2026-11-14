@@ -16,7 +16,8 @@ export const SCALAR_PERSISTED = [
   "selectedSlotText",
   "currentVisitId",
   "currentViewingId",
-  "offered"
+  "offered",
+  "coach"
 ];
 
 export const ARRAY_PERSISTED = [
@@ -35,7 +36,8 @@ export const ARRAY_PERSISTED = [
   "media",
   "audioChunks",
   "transcripts",
-  "vetoReleases"
+  "vetoReleases",
+  "priceLog"
 ];
 
 export const PERSISTED_KEYS = [...SCALAR_PERSISTED, ...ARRAY_PERSISTED];
@@ -45,7 +47,7 @@ export const PERSISTED_KEYS = [...SCALAR_PERSISTED, ...ARRAY_PERSISTED];
  * 改物件代號時控制器逐一改這些表，不變條件的關聯檢查也由這份清單驅動，兩邊不會再不同步。
  * 屋單的代號本身也可能等於物件代號，改代號時另外處理，所以不在這份清單裡。
  */
-export const PROPERTY_REF_TABLES = ["viewings", "scores", "media", "audioChunks", "transcripts", "vetoReleases", "drafts"];
+export const PROPERTY_REF_TABLES = ["viewings", "scores", "media", "audioChunks", "transcripts", "vetoReleases", "drafts", "priceLog"];
 
 export const SESSION_KEYS = [
   "currentVisitId",
@@ -80,7 +82,9 @@ export const STATE_STORE_MAP = {
   media: "media",
   audioChunks: "audioChunks",
   transcripts: "transcripts",
-  vetoReleases: "vetoReleases"
+  vetoReleases: "vetoReleases",
+  coach: "coach",
+  priceLog: "priceLog"
 };
 
 export const SESSION_STORE = "session";
@@ -98,6 +102,14 @@ export const STORES = [...new Set([...Object.values(STATE_STORE_MAP), SESSION_ST
 export const BACKUP_TABLES = PERSISTED_KEYS.filter(
   (k) => !["media", "audioChunks"].includes(k)
 );
+
+/**
+ * 口袋教練的持久狀態（第 13 輪 C2）：目前階段、各步驟完成日期、階段筆記，加上第 13 輪 E7 的自訂題目與隱藏的選做題。
+ * 白話：教練做到哪、勾了哪些步驟、記了哪些筆記，都存在這一份，和設定、財務一樣是單筆資料。
+ */
+export function emptyCoach() {
+  return { current_stage: null, steps_done: {}, stage_notes: [], custom_items: [], hidden_items: [] };
+}
 
 export function emptyPersisted() {
   return {
@@ -124,6 +136,8 @@ export function emptyPersisted() {
     audioChunks: [],
     transcripts: [],
     vetoReleases: [],
+    priceLog: [],
+    coach: emptyCoach(),
     cooling: null,
     selectedSlot: null,
     selectedSlotText: "",

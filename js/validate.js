@@ -307,7 +307,8 @@ export function crossFieldCheck(data, opts = {}) {
 
   for (const [field, val] of [
     ["finance_as_of", f.finance_as_of],
-    ...areas.map((a) => ["data_as_of", a.data_as_of])
+    ...areas.map((a) => ["data_as_of", a.data_as_of]),
+    ...areas.map((a) => ["research_as_of", a.research_as_of])
   ]) {
     if (!val) continue;
     if (!isRealIsoDate(val)) {
@@ -335,6 +336,20 @@ export function crossFieldCheck(data, opts = {}) {
   for (const key of REQUIRED_NO_SUGGESTION) {
     if (isBlank(f[key])) {
       pending.push({ field: key, required: true, message: "必填欄，匯入檔留空，不提供建議值，請本人填寫" });
+    }
+  }
+
+  // 待看物件（第 12 輪）：代號不可重複、預計看房日要是真的日期（整份檔案的嚴格檢查；匯入畫面是逐列待核，見 notes-import.js）
+  if (Array.isArray(data.properties)) {
+    const seenCodes = new Set();
+    for (const row of data.properties) {
+      if (!row || typeof row !== "object") continue;
+      const code = String(row.property_code ?? "").trim();
+      if (code) {
+        if (seenCodes.has(code)) errors.push({ field: "property_code", message: `物件代號 ${code} 重複` });
+        seenCodes.add(code);
+      }
+      if (row.planned_date && !isRealIsoDate(row.planned_date)) errors.push({ field: "planned_date", message: "日期不存在" });
     }
   }
 

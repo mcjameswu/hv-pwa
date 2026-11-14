@@ -22,7 +22,8 @@ export function coreItems(methodPack, phase) {
   return list;
 }
 
-function responseValue(resp) {
+/** 一題回應的狀態：有沒有填、是不是待核、是不是不適用（匯出到筆記也用它算功課完成度）。 */
+export function responseValue(resp) {
   if (!resp) return { filled: false, pending: false };
   const status = resp.status;
   const raw = status === undefined || status === null || status === "" ? resp.value : status;
@@ -32,6 +33,55 @@ function responseValue(resp) {
   if (v === "待核" || v === "UNKNOWN" || v === "看不出來") return { filled: true, pending: true };
   if (v === "不適用" || String(v).startsWith("不適用")) return { filled: true, pending: false, na: true };
   return { filled: true, pending: false };
+}
+
+/** 同一題多間的答案，嚴重的排在前面，取最嚴重的那一間。 */
+const WORST_ORDER = ["嚴重", "有問題", "否", "不符合", "撐不住", "輕微", "部分符合", "勉強", "待核", "待查", "看不出來", "無問題", "正常", "符合", "是", "已查", "可撐"];
+
+/**
+ * 一題在好幾間（房間、浴室）各答一次之後，整題的答案：
+ * 有任何一間沒答就整題算沒答；全部答了，取最嚴重的那一間；全部都標不適用，整題就是不適用。
+ */
+export function aggregateInstanceAnswers(recs) {
+  if (!recs.length || recs.some((r) => !responseValue(r).filled)) return null;
+  const real = recs.filter((r) => !responseValue(r).na);
+  if (!real.length) return { status: "不適用", value: "不適用", reason: String(recs.find((r) => r.reason)?.reason || "") };
+  const values = real.map((r) => String(r.value ?? r.status ?? ""));
+  let best = null;
+  let bestRank = Infinity;
+  for (const v of values) {
+    const rank = WORST_ORDER.indexOf(v);
+    if (rank >= 0 && rank < bestRank) {
+      best = v;
+      bestRank = rank;
+    }
+  }
+  if (best === null) {
+    const joined = values.filter(Boolean).join("；");
+    return { status: joined ? "是" : "待核", value: joined };
+  }
+  const worstRec = real.find((r) => String(r.value ?? r.status ?? "") === best);
+  return { status: best, value: best, ...(worstRec?.note ? { note: worstRec.note } : {}) };
+}
+
+/**
+ * 第 14 輪 F-R14-01：一題拿來「計分與一票否決」的證據答案。
+ * 白話：完成度和證據分開看。完成度要每一間都答完才算（那是 responses[題目代號] 那一格）；
+ * 證據只要任何一間已經有答案，就取已答各間裡最嚴重的那一個，其他間有沒有答都不影響，
+ * 所以新增一間沒答的浴室、改站名、換順序，都不會讓已經知道的嚴重答案消失。
+ * 沒有任何一間答過時，回到原本整題那一格（舊版或進階現場頁寫的整題答案）。
+ */
+export function evidenceRecord(responses, itemId) {
+  const bag = responses || {};
+  const prefix = `${itemId}@`;
+  const answeredHere = Object.keys(bag)
+    .filter((k) => k.startsWith(prefix))
+    .map((k) => bag[k])
+    .filter((r) => responseValue(r).filled);
+  if (!answeredHere.length) return bag[itemId];
+  const whole = bag[itemId];
+  const all = responseValue(whole).filled ? [...answeredHere, whole] : answeredHere;
+  return aggregateInstanceAnswers(all) || bag[itemId];
 }
 
 /**

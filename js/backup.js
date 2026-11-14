@@ -7,6 +7,7 @@ import { validateTable, META_FINANCE_KEYS, normalizeValue, parseNumericRaw } fro
 import { BACKUP_TABLES } from "./persisted.js";
 import { validateMergedThresholds } from "./validate.js";
 import { DEFAULT_SCORING } from "./defaults.js";
+import { normalizeCoach } from "./coach.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -157,7 +158,7 @@ export function validateBackupPayload(data, opts = {}) {
     const v = data[k] !== undefined ? data[k] : tables[k];
     if (v === undefined || v === null) continue;
     const primitive = ["selectedSlotText", "currentVisitId", "currentViewingId", "offered"].includes(k);
-    const scalar = ["settings", "finance", "finance_meta", "profile", "scoring", "methodPack", "cooling", "selectedSlot"].includes(k);
+    const scalar = ["settings", "finance", "finance_meta", "profile", "scoring", "methodPack", "cooling", "selectedSlot", "coach"].includes(k);
     if (primitive) continue;
     if (scalar) {
       if (typeof v !== "object" || Array.isArray(v)) {
@@ -237,7 +238,7 @@ export function validateBackupPayload(data, opts = {}) {
   if (new Set(viewingIdList).size !== viewingIdList.length) {
     return { ok: false, error: "看房紀錄主鍵重複" };
   }
-  for (const table of ["properties", "viewings", "scores", "media", "agents", "visits", "listings", "importBatches", "transcripts", "audioChunks", "areas", "slots", "travel", "drafts", "vetoReleases"]) {
+  for (const table of ["properties", "viewings", "scores", "media", "agents", "visits", "listings", "importBatches", "transcripts", "audioChunks", "areas", "slots", "travel", "drafts", "vetoReleases", "priceLog"]) {
     const rows = Array.isArray(data[table]) ? data[table] : [];
     const ids = rows.map((r) => r.id).filter(Boolean);
     if (new Set(ids).size !== ids.length) {
@@ -258,6 +259,11 @@ export function validateBackupPayload(data, opts = {}) {
   for (const r of Array.isArray(data.vetoReleases) ? data.vetoReleases : []) {
     if (r.property_id && !propIds.has(r.property_id)) {
       return { ok: false, error: `否決解除紀錄 ${r.id || ""} 關聯物件不存在` };
+    }
+  }
+  for (const r of Array.isArray(data.priceLog) ? data.priceLog : []) {
+    if (r.property_id && !propIds.has(r.property_id)) {
+      return { ok: false, error: `問價紀錄 ${r.id || ""} 關聯物件不存在` };
     }
   }
   // 照片與錄音必須對得到看房或門市訪視（F9-04）：對不到的備份拿去還原會被擋，所以匯出與還原都先檢查
@@ -395,9 +401,9 @@ function stableJson(v) {
 }
 
 /** 一般列要比內容的表（媒體與錄音分片只比中繼資料，內容位元組不比）。 */
-const DIFF_ROW_TABLES = ["properties", "viewings", "scores", "visits", "listings", "transcripts", "drafts", "media", "audioChunks", "vetoReleases"];
+const DIFF_ROW_TABLES = ["properties", "viewings", "scores", "visits", "listings", "transcripts", "drafts", "media", "audioChunks", "vetoReleases", "priceLog"];
 /** 單筆型資料：設定、財務、輪廓、評分設定。 */
-const DIFF_SINGLE_TABLES = ["settings", "finance", "profile", "scoring"];
+const DIFF_SINGLE_TABLES = ["settings", "finance", "profile", "scoring", "coach"];
 /** 清單型門檻資料與各自的業務鍵（系統補上的內部代號不比）。 */
 const DIFF_LIST_TABLES = { areas: "area_code", agents: "slot_id", travel: "place_alias", slots: "slot_id" };
 
@@ -414,6 +420,7 @@ function normalizeSingle(table, obj) {
   if (table === "settings") delete o.has_offer; // 匯出時由「已出價」另外補上，不是使用者填的設定
   if (table === "finance") for (const k of META_FINANCE_KEYS) delete o[k];
   if (table === "scoring") return { ...DEFAULT_SCORING, ...o }; // 舊資料缺的欄位補上出貨預設，兩邊用同一個規則
+  if (table === "coach") return normalizeCoach(obj); // 第 13 輪：舊備份沒有教練狀態，和空的教練狀態視為相同
   return o;
 }
 
@@ -478,7 +485,9 @@ export function backupDiff(local = {}, incoming = {}) {
 /** 全新裝置：沒有任何物件、看房、訪視、媒體，而且設定與財務都是空的。第一次還原不需要問使用者。 */
 export function isFreshState(state = {}) {
   const empty = (v) => v === undefined || v === null || (Array.isArray(v) ? v.length === 0 : typeof v === "object" ? Object.keys(v).length === 0 : false);
-  return ["properties", "viewings", "visits", "media", "audioChunks", "settings", "finance"].every((k) => empty(state[k]));
+  const c = normalizeCoach(state.coach);
+  const coachEmpty = !Object.keys(c.steps_done).length && !c.stage_notes.length && !c.custom_items.length && !c.hidden_items.length;
+  return ["properties", "viewings", "visits", "media", "audioChunks", "settings", "finance", "priceLog"].every((k) => empty(state[k])) && coachEmpty;
 }
 
 /**

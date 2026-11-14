@@ -3,6 +3,7 @@ import { splitList } from "./lists.js";
 import { parseNumericRaw, capIsBlank as financeCapIsBlank, normalizeCondition, normalizeValue, resolveScreenInputs, isFlagOn, PROPERTY_EDIT_KEYS } from "./fields.js";
 import { itemsForViewing, itemsAssumed } from "./items-for-viewing.js";
 import { rankEligible, agentListEligible } from "./rank-eligible.js";
+import { evidenceRecord } from "./counting.js";
 
 export const PENDING = "待核";
 export const INSUFFICIENT = "資料不足";
@@ -729,7 +730,7 @@ export function viewingAnswers(state, viewing) {
   for (const item of items) {
     let key = item.condition_key;
     if (!key && /漏水/.test(item.text || "")) key = "leak";
-    const rec = responses[item.id];
+    const rec = evidenceRecord(responses, item.id); // 證據：有任何一間答過就取已答各間最嚴重的（F-R14-01）
     const val = rec?.value ?? rec?.status;
     if (key) {
       const label = normalizeCondition(val).value;

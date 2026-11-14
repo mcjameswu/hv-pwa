@@ -27,6 +27,7 @@ const TABLE_LABELS = {
   transcripts: "逐字稿",
   drafts: "草稿",
   vetoReleases: "否決解除紀錄",
+  priceLog: "問價紀錄",
   settings: "設定",
   finance: "財務",
   profile: "輪廓",
@@ -34,7 +35,7 @@ const TABLE_LABELS = {
 };
 
 /** 關聯檢查訊息裡各資料表的稱呼（沿用既有說法）。 */
-const PROPERTY_LINK_LABELS = { viewings: "看房", scores: "評分", vetoReleases: "否決解除紀錄", media: "媒體", audioChunks: "錄音分片", transcripts: "逐字稿", drafts: "草稿" };
+const PROPERTY_LINK_LABELS = { viewings: "看房", scores: "評分", vetoReleases: "否決解除紀錄", media: "媒體", audioChunks: "錄音分片", transcripts: "逐字稿", drafts: "草稿", priceLog: "問價紀錄" };
 
 const LOCAL_FIELD_LABELS = {
   areas: {
@@ -155,7 +156,8 @@ export function collectInvariantErrors(state = {}) {
     "audioChunks",
     "transcripts",
     "drafts",
-    "vetoReleases"
+    "vetoReleases",
+    "priceLog"
   ];
   const rows = {};
   for (const t of keyTables) {

@@ -115,6 +115,8 @@ export function splitStateToStores(payload = {}) {
     audioChunks: (payload.audioChunks || []).map((c, i) => ({ ...c, id: c.id || `a-${i}` })),
     transcripts: (payload.transcripts || []).map((t, i) => ({ ...t, id: t.id || `t-${i}` })),
     vetoReleases: (payload.vetoReleases || []).map((r, i) => ({ ...r, id: r.id || `vr-${i}` })),
+    priceLog: (payload.priceLog || []).map((r, i) => ({ ...r, id: r.id || `pl-${i}` })),
+    coach: payload.coach ? [row("current", payload.coach)] : [],
     agents: (payload.agents || []).map((a, i) => ({ ...a, id: a.id || a.slot_id || `ag-${i}` })),
     slots333: (payload.slots || []).map((s, i) => ({ ...s, id: s.id || s.slot_id || `slot-${i}` })),
     agencyVisits: (payload.visits || []).map((v, i) => ({ ...v, id: v.id || `vis-${i}` })),
@@ -189,6 +191,14 @@ export function storesToState(stores) {
     audioChunks: stores.audioChunks || [],
     transcripts: stores.transcripts || [],
     vetoReleases: stores.vetoReleases || [],
+    priceLog: stores.priceLog || [],
+    coach: (() => {
+      const row = stores.coach?.[0];
+      if (!row) return undefined; // 舊資料庫沒有這一列：交給控制器補成空的教練狀態
+      const c = { ...row };
+      delete c.id;
+      return c;
+    })(),
     agents: stores.agents || [],
     slots: stores.slots333 || [],
     visits: stores.agencyVisits || [],

@@ -4,7 +4,7 @@
 import { DEFAULT_SCORING, CONDITION_KEYS } from "./defaults.js";
 import { propertiesForAgentDraft, listingToProperty as listingToPropertyFn, assessPropertyFromState, isStretchProperty, latestScoreFor, latestViewingFor, latestAnswerClearsVeto, mergedEvidenceFor, VETO_KINDS } from "./scoring.js";
 import { runAffordability } from "./affordability.js";
-import { countViewing, uniqueCounted, w3OnsiteAudit, sameDaySoftWarning } from "./counting.js";
+import { countViewing, uniqueCounted, w3OnsiteAudit, sameDaySoftWarning, responseValue } from "./counting.js";
 import { encryptBackup, decryptDownloadedFiles, toUint8, restoreMediaItem, validateBackupPayload, looksLikeImportThresholds, mergeBackupKeepLocal, backupDiff, isFreshState, findOrphanMedia, BACKUP_VERSION } from "./backup.js";
 import { applyImport, applyGatedThresholdChange, restoreBatch, planImport, thresholdFingerprint } from "./validate.js";
 import { validateMethodPack } from "./method-pack.js";
@@ -18,8 +18,13 @@ import { normalizeValue, normalizeChanged, capIsBlank, stripFinanceMeta, isFlagO
 import { collectInvariantErrors } from "./invariants.js";
 import { getImportSchemaCached, isRealIsoDate } from "./schema.js";
 import { applyFinanceMeta, applyNextFinanceMeta, migrateFinanceMeta, isLegacyPlainHash } from "./finance-trust.js";
-import { itemsForViewing, packContentHash, snapshotItems } from "./items-for-viewing.js";
+import { itemsForViewing, packContentHash, snapshotItems, packChecklist } from "./items-for-viewing.js";
 import { rankEligible } from "./rank-eligible.js";
+import { planNotesProperties, hasThresholdTables, hasNotesProperties, plainImportSummary, unknownAreaCodesOf } from "./notes-import.js";
+import { buildNotesPayload, notesFileName } from "./notes-export.js";
+import { scanPriceLogEntry, priceLogProblems, PRICE_LOG_AMOUNT_MESSAGE } from "./price-log.js";
+import { stagesInfo, normalizeCoach, mergeCoach, stageProgress, localDate } from "./coach.js";
+import { routeStations, buildSites, resolveStations, responseKeyOf, recomputeAggregates, normalFillPlan, stationItems, stationImpact, stationKeyOf, stationNameOf, MAX_INSTANCES, DEFAULT_CUSTOM_OPTIONS } from "./sites.js";
 import { splitStateToStores, NEVER_IN_SPLIT, hasContent } from "../db.js";
 
 export const WRITE_COMMANDS = [
@@ -53,7 +58,27 @@ export const WRITE_COMMANDS = [
   "transferAgent",
   "addViewing",
   "selectViewing",
-  "leaveViewing"
+  "leaveViewing",
+  "confirmOnsiteFields",
+  "setCoachStage",
+  "setCoachStepDone",
+  "completeCoachStage",
+  "addStageNote",
+  "removeStageNote",
+  "addPriceLog",
+  "removePriceLog",
+  "ensureSites",
+  "setSiteResponse",
+  "addStation",
+  "removeStation",
+  "renameStation",
+  "moveStation",
+  "markStationNormal",
+  "addCustomItem",
+  "removeCustomItem",
+  "setItemHidden",
+  "markItemNotApplicable",
+  "markMissingPending"
 ];
 
 export function emptyState() {
@@ -78,6 +103,7 @@ function freezeDeep(obj, seen = new WeakSet()) {
 }
 
 const SINGLETON_STORES = new Set([
+  "coach",
   "cooling",
   "methodPack",
   "scoring",
@@ -95,6 +121,9 @@ function mapRows(rows, fn) {
 
 function migrateLoaded(s) {
   migrateFinanceMeta(s);
+  // 第 13 輪：口袋教練狀態與問價紀錄。舊資料沒有這兩樣就補成空的；教練狀態整理成乾淨的樣子（找不到的步驟代號照樣保留）
+  s.coach = normalizeCoach(s.coach);
+  if (!Array.isArray(s.priceLog)) s.priceLog = [];
   if (!s.selectedSlot && s.selectedSlotText) {
     s.selectedSlot = { text: s.selectedSlotText, date: null };
   }
@@ -537,6 +566,12 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       else if (k === "parking_included_in_ask") out[k] = r.state === "ok" ? r.value : null;
       else out[k] = r.state === "ok" ? r.value : (k === "fake_alerts" ? 0 : k === "fake_price_alt" || k === "community_name" ? "" : null);
     }
+    // 第 13 輪：衛浴數只記錄，不放進 PROPERTY_EDIT_KEYS（那份清單也是評分輸入指紋，放進去會讓所有舊評分變成「待重評」）
+    if ("baths" in fields && (!only || only.has("baths"))) {
+      const b = normalizeValue("properties", "baths", fields.baths);
+      if (b.state === "invalid") errors.push({ field: "baths", message: b.error });
+      else out.baths = b.state === "ok" ? b.value : null;
+    }
     if (fields.deal_breaker_hits && (!only || only.has("deal_breaker_hits"))) out.deal_breaker_hits = fields.deal_breaker_hits;
     if (fields.condition && (!only || only.has("condition"))) out.condition = fields.condition;
     if (fields.timing_score !== undefined && fields.timing_score !== null && fields.timing_score !== "" && (!only || only.has("timing_score"))) {
@@ -598,7 +633,11 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     };
   }
 
-  async function addProperty(fields = {}) {
+  /**
+   * 新增物件。預設同時開一筆看房紀錄（舊流程都靠這個）；withViewing 為 false 時只建物件、不開看房紀錄，
+   * 「看一間」第一步新增物件用，要按「開始看這間」才建立看房紀錄（第 12 輪 U3）。
+   */
+  async function addProperty(fields = {}, { withViewing = true } = {}) {
     return command("addProperty", async (draft, tx) => {
       stopSpeechAndConsent();
       const norm = normalizePropertyFields(fields);
@@ -619,6 +658,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
         condition: fields.condition || Object.fromEntries(CONDITION_KEYS.map((k) => [k, null]))
       };
       draft.properties.push(p);
+      if (!withViewing) return { ok: true, property: p, viewing: null };
       const v = {
         id: fields.viewing_id || nid("v"),
         property_id: p.id,
@@ -694,6 +734,10 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     // 帶物件代號的資料表由 PROPERTY_REF_TABLES 驅動，不再手寫逐表清單（F9-12）
     for (const k of PROPERTY_REF_TABLES) {
       for (const r of draft[k] || []) if (r && r.property_id === oldId) r.property_id = newId;
+    }
+    // 階段筆記記的物件代號跟著改（階段筆記放在教練狀態裡，不是獨立的資料表）
+    if (draft.coach && Array.isArray(draft.coach.stage_notes)) {
+      draft.coach.stage_notes = draft.coach.stage_notes.map((n) => (n && n.property_code === oldId ? { ...n, property_code: newId } : n));
     }
     for (const l of draft.listings) {
       if (l.property_id === oldId || l.id === oldId) {
@@ -793,7 +837,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     });
   }
 
-  async function takePhoto({ blob, name = "photo.jpg", viewingId } = {}) {
+  async function takePhoto({ blob, name = "photo.jpg", viewingId, stationKey, itemId } = {}) {
     return command("takePhoto", async (draft, tx) => {
       const vid = viewingId || draft.currentViewingId;
       const viewing = draft.viewings.find((x) => x.id === vid);
@@ -811,11 +855,14 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
         type: "photo",
         name,
         size: bytes?.length || 0,
-        bytes
+        bytes,
+        // 第 13 輪 E7：現場照片記下是哪一站（哪一間房、哪一間浴室）、哪一題；沒有指定就和以前一樣
+        ...(stationKey ? { station_key: String(stationKey) } : {}),
+        ...(itemId ? { item_id: String(itemId) } : {})
       };
       tx.mediaPuts.push(rec);
       viewing.photos = viewing.photos || [];
-      viewing.photos.push({ at: new Date(now()).toISOString(), name, bytes: rec.size, id: rec.id });
+      viewing.photos.push({ at: new Date(now()).toISOString(), name, bytes: rec.size, id: rec.id, ...(stationKey ? { station_key: String(stationKey) } : {}), ...(itemId ? { item_id: String(itemId) } : {}) });
       draft.media.push(stripBytes(rec));
       return { ok: true, media: stripBytes(rec) };
     });
@@ -999,9 +1046,10 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       };
 
       if (mode === "merge") {
-        for (const k of ["properties", "viewings", "scores", "visits", "listings", "transcripts", "vetoReleases", "drafts"]) {
+        for (const k of ["properties", "viewings", "scores", "visits", "listings", "transcripts", "vetoReleases", "drafts", "priceLog"]) {
           draft[k] = mergeBackupKeepLocal(draft[k], incoming[k]);
         }
+        draft.coach = mergeCoach(draft.coach, incoming.coach);
         const localMediaIds = new Set((draft.media || []).map((m) => m.id));
         const localChunkIds = new Set((draft.audioChunks || []).map((m) => m.id));
         for (const rec of incoming.media || []) {
@@ -1299,7 +1347,54 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     return thresholdsOf(committed);
   }
 
+  /** 待看物件計畫給畫面看的樣子：不帶整份物件資料，只帶筆數、代號、衝突與待核清單。 */
+  function notesView(plan) {
+    return {
+      summary: { ...plan.summary },
+      created: plan.created.map((c) => c.id),
+      updated: plan.updated.map((u) => ({ id: u.id, fields: [...u.fields] })),
+      conflicts: plan.conflicts.map((c) => ({ ...c })),
+      pending: plan.pending.map((p) => ({ index: p.index, code: p.code, errors: p.errors.map((e) => ({ ...e })) })),
+      ignoredFields: [...plan.ignoredFields],
+      changed: plan.changed
+    };
+  }
+
   function previewImport(data, schema, opts = {}) {
+    const props = hasNotesProperties(data) ? data.properties : null;
+    const notesPlan = props ? planNotesProperties(committed.properties, props, { choices: opts.notesChoices }) : null;
+    // 只有待看物件、沒有任何匯入表的檔案，不走門檻檢查（沒有門檻資料要驗），也不會觸發冷靜期
+    const base = hasThresholdTables(data) || !props ? previewThresholds(data, schema, opts) : emptyThresholdPreview();
+    return {
+      ...base,
+      notesImport: notesPlan ? notesView(notesPlan) : null,
+      notesChanged: notesPlan ? notesPlan.changed : false,
+      plainSummary: plainImportSummary({
+        plan: notesPlan,
+        diff: base.diff,
+        unknownAreaCodes: unknownAreaCodesOf(notesPlan, [...(base.merged?.areas || []), ...(Array.isArray(data?.areas) ? data.areas : [])])
+      })
+    };
+  }
+
+  function emptyThresholdPreview() {
+    return {
+      ok: true,
+      errors: [],
+      warnings: [],
+      notes: [],
+      pending: [],
+      b01RequiresManual: false,
+      b01Differs: false,
+      canStartCooling: false,
+      unchanged: true,
+      diff: [],
+      plan: null,
+      merged: currentThresholds()
+    };
+  }
+
+  function previewThresholds(data, schema, opts = {}) {
     const current = currentThresholds();
     const plan = planImport(current, data, {
       preview: true,
@@ -1327,118 +1422,201 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     };
   }
 
-  async function confirmImport(data, opts = {}) {
-    return command("confirmImport", async (draft, tx) => {
-      const ctx = gateContext(opts);
-      const current = thresholdsOf(draft);
-      const recomputed = planImport(current, data, {
-        preview: false,
-        typedB01: ctx.typedB01,
-        confirmedSuggestions: ctx.confirmedSuggestions,
-        now: ctx.now,
-        reason: ctx.reason,
-        cooling: draft.cooling,
-        coolingUntil: draft.cooling?.until,
-        schema: getImportSchemaCached(),
-        lastAuditAt: ctx.lastAuditAt
-      });
-      if (opts.plan) {
-        if (opts.plan.baseFingerprint !== recomputed.baseFingerprint || opts.plan.incomingFingerprint !== recomputed.incomingFingerprint) {
-          return { ok: false, error: "資料已變更，請重新預覽", message: "資料已變更，請重新預覽" };
-        }
+  /**
+   * 匯入表的門檻部分（設定、財務、輪廓、區域、評分、仲介、通勤）：和第 11 輪以前完全相同的寫入流程，
+   * 只是抽成函式，讓同一份檔案裡的待看物件可以在同一個交易裡一起寫（要嘛全寫、要嘛全不寫）。
+   */
+  async function applyThresholdImport(draft, tx, data, opts) {
+    const ctx = gateContext(opts);
+    const current = thresholdsOf(draft);
+    const recomputed = planImport(current, data, {
+      preview: false,
+      typedB01: ctx.typedB01,
+      confirmedSuggestions: ctx.confirmedSuggestions,
+      now: ctx.now,
+      reason: ctx.reason,
+      cooling: draft.cooling,
+      coolingUntil: draft.cooling?.until,
+      schema: getImportSchemaCached(),
+      lastAuditAt: ctx.lastAuditAt
+    });
+    if (opts.plan) {
+      if (opts.plan.baseFingerprint !== recomputed.baseFingerprint || opts.plan.incomingFingerprint !== recomputed.incomingFingerprint) {
+        return { ok: false, error: "資料已變更，請重新預覽", message: "資料已變更，請重新預覽" };
       }
-      const last = (draft.importBatches || []).at(-1);
-      const applied = applyImport(current, data, {
-        typedB01: ctx.typedB01,
-        confirmedSuggestions: ctx.confirmedSuggestions,
-        now: ctx.now,
-        reason: ctx.reason,
-        cooling: draft.cooling,
-        coolingUntil: draft.cooling?.until,
-        lastImportHash: last?.hash,
-        fileHash: ctx.fileHash,
-        lastAuditAt: ctx.lastAuditAt
-      });
-      if (!applied.ok) {
-        if (ctx.startCooling && applied.cooling) {
-          tx.commitOnFailure = true;
-          draft.cooling = applied.cooling;
-          return { ok: false, startedCooling: true, cooling: applied.cooling, message: applied.message };
-        }
-        return applied;
+    }
+    const last = (draft.importBatches || []).at(-1);
+    const applied = applyImport(current, data, {
+      typedB01: ctx.typedB01,
+      confirmedSuggestions: ctx.confirmedSuggestions,
+      now: ctx.now,
+      reason: ctx.reason,
+      cooling: draft.cooling,
+      coolingUntil: draft.cooling?.until,
+      lastImportHash: last?.hash,
+      fileHash: ctx.fileHash,
+      lastAuditAt: ctx.lastAuditAt
+    });
+    if (!applied.ok) {
+      if (ctx.startCooling && applied.cooling) {
+        tx.commitOnFailure = true;
+        draft.cooling = applied.cooling;
+        return { ok: false, startedCooling: true, cooling: applied.cooling, message: applied.message };
       }
-      const sameState = JSON.stringify(thresholdsOf(draft)) === JSON.stringify(thresholdsOf({
-        ...draft,
-        settings: applied.state?.settings || draft.settings,
-        finance: applied.state?.finance || draft.finance,
-        profile: applied.state?.profile || draft.profile,
-        scoring: applied.state?.scoring || draft.scoring,
-        areas: applied.state?.areas || draft.areas,
-        agents: applied.state?.agents || draft.agents,
-        travel: applied.state?.travel || draft.travel
-      }));
-      const importedKeys = data?._importedKeys;
-      const financeSheetSupplied = Array.isArray(importedKeys) ? importedKeys.includes("finance") : true;
-      const incomingMeta = {
-        origin: data?.origin || data?.source_type,
-        source: data?.source,
-        as_of: data?.as_of || data?.finance_as_of || data?.finance?.finance_as_of || null,
-        verified: data?.verified,
-        source_type: data?.source_type
-      };
-      if (applied.unchanged || sameState) {
-        syncFinanceMeta(draft, { financeSheetSupplied, incomingMeta, nextFinance: draft.finance });
-        return { ...applied, unchanged: true };
-      }
-      if (!draft.importBatches.length) {
-        draft.importBatches.push({
-          id: "baseline",
-          baseline: true,
-          at: new Date(ctx.now).toISOString(),
-          snapshot: cloneValue({
-            settings: current.settings,
-            finance: current.finance,
-            finance_meta: current.finance_meta,
-            profile: current.profile,
-            scoring: current.scoring,
-            areas: current.areas,
-            agents: current.agents,
-            travel: current.travel
-          })
-        });
-      }
-      draft.settings = applied.state.settings || {};
-      draft.finance = stripFinanceMeta(applied.state.finance || {});
-      syncFinanceMeta(draft, {
-        financeSheetSupplied,
-        incomingMeta,
-        nextFinance: draft.finance
-      });
-      draft.profile = applied.state.profile || {};
-      draft.scoring = applied.state.scoring || draft.scoring;
-      draft.areas = applied.state.areas || [];
-      draft.agents = applied.state.agents || [];
-      draft.travel = applied.state.travel || [];
-      if (applied.audit) {
-        for (const a of applied.audit) draft.audit.push({ ...a, id: a.id || nid("au") });
-      }
-      if (applied.cooling === null) draft.cooling = null;
+      return applied;
+    }
+    const sameState = JSON.stringify(thresholdsOf(draft)) === JSON.stringify(thresholdsOf({
+      ...draft,
+      settings: applied.state?.settings || draft.settings,
+      finance: applied.state?.finance || draft.finance,
+      profile: applied.state?.profile || draft.profile,
+      scoring: applied.state?.scoring || draft.scoring,
+      areas: applied.state?.areas || draft.areas,
+      agents: applied.state?.agents || draft.agents,
+      travel: applied.state?.travel || draft.travel
+    }));
+    const importedKeys = data?._importedKeys;
+    const financeSheetSupplied = Array.isArray(importedKeys) ? importedKeys.includes("finance") : true;
+    const incomingMeta = {
+      origin: data?.origin || data?.source_type,
+      source: data?.source,
+      as_of: data?.as_of || data?.finance_as_of || data?.finance?.finance_as_of || null,
+      verified: data?.verified,
+      source_type: data?.source_type
+    };
+    if (applied.unchanged || sameState) {
+      syncFinanceMeta(draft, { financeSheetSupplied, incomingMeta, nextFinance: draft.finance });
+      return { ...applied, unchanged: true };
+    }
+    if (!draft.importBatches.length) {
       draft.importBatches.push({
-        id: ctx.fileHash ? String(ctx.fileHash).slice(0, 12) : nid("imp"),
-        hash: ctx.fileHash,
+        id: "baseline",
+        baseline: true,
         at: new Date(ctx.now).toISOString(),
         snapshot: cloneValue({
-          settings: draft.settings,
-          finance: draft.finance,
-          finance_meta: draft.finance_meta,
-          profile: draft.profile,
-          scoring: draft.scoring,
-          areas: draft.areas,
-          agents: draft.agents,
-          travel: draft.travel
+          settings: current.settings,
+          finance: current.finance,
+          finance_meta: current.finance_meta,
+          profile: current.profile,
+          scoring: current.scoring,
+          areas: current.areas,
+          agents: current.agents,
+          travel: current.travel
         })
       });
-      return applied;
+    }
+    draft.settings = applied.state.settings || {};
+    draft.finance = stripFinanceMeta(applied.state.finance || {});
+    syncFinanceMeta(draft, {
+      financeSheetSupplied,
+      incomingMeta,
+      nextFinance: draft.finance
+    });
+    draft.profile = applied.state.profile || {};
+    draft.scoring = applied.state.scoring || draft.scoring;
+    draft.areas = applied.state.areas || [];
+    draft.agents = applied.state.agents || [];
+    draft.travel = applied.state.travel || [];
+    if (applied.audit) {
+      for (const a of applied.audit) draft.audit.push({ ...a, id: a.id || nid("au") });
+    }
+    if (applied.cooling === null) draft.cooling = null;
+    draft.importBatches.push({
+      id: ctx.fileHash ? String(ctx.fileHash).slice(0, 12) : nid("imp"),
+      hash: ctx.fileHash,
+      at: new Date(ctx.now).toISOString(),
+      snapshot: cloneValue({
+        settings: draft.settings,
+        finance: draft.finance,
+        finance_meta: draft.finance_meta,
+        profile: draft.profile,
+        scoring: draft.scoring,
+        areas: draft.areas,
+        agents: draft.agents,
+        travel: draft.travel
+      })
+    });
+    return applied;
+  }
+
+  async function confirmImport(data, opts = {}) {
+    return command("confirmImport", async (draft, tx) => {
+      const props = hasNotesProperties(data) ? data.properties : null;
+      const notesPlan = props ? planNotesProperties(draft.properties, props, { choices: opts.notesChoices }) : null;
+      const result = hasThresholdTables(data) || !props ? await applyThresholdImport(draft, tx, data, opts) : { ok: true, unchanged: true };
+      if (result?.ok === false) return result;
+      if (!notesPlan) return result;
+      const view = notesView(notesPlan);
+      if (!notesPlan.changed) return { ...result, notesImport: view };
+      draft.properties = notesPlan.next;
+      // 稽核只記筆數，不記任何欄位內容
+      draft.audit.push({
+        id: nid("au"),
+        type: "notes_import",
+        at: new Date(now()).toISOString(),
+        created: notesPlan.created.length,
+        updated: notesPlan.updated.length,
+        conflicts: notesPlan.conflicts.length,
+        pending: notesPlan.pending.length
+      });
+      return { ...result, unchanged: false, notesImport: view };
+    });
+  }
+
+  /**
+   * 匯出到筆記（S3）：唯讀入口。白名單組好內容後一定要過出口閘門（收件對象 notes），沒過就不交出任何內容。
+   * 回傳 { ok, approved, prepared, text, filename, summary }；畫面只能把它交給 deliverNotesFile。
+   */
+  async function buildNotesExport() {
+    return readQuery(async () => {
+      const sync = await resyncIfStale();
+      if (!sync.ok) return sync;
+      const state = committed;
+      const nowMs = toFiniteNumber(now()) ?? Date.now();
+      const { payload, skippedStretch, skippedNotes } = buildNotesPayload(state, { nowMs });
+      const prepared = prepareOutbound({ recipient: "notes", state, notesPayload: payload });
+      if (!prepared.ok) {
+        // 找出是哪些內容被擋（每一塊各自再過一次閘門，其他塊清空），讓使用者知道要改哪裡
+        const bare = { ...payload, properties: [], areas: [], stage_notes: [], coach: { current_stage: null, stages: [], steps_done: [], custom_items: [] } };
+        const hit = (part) => !prepareOutbound({ recipient: "notes", state, notesPayload: { ...bare, ...part } }).ok;
+        const blocked = payload.properties.filter((row) => hit({ properties: [row] })).map((row) => row.property_code);
+        const blockedNotes = payload.stage_notes.filter((n) => hit({ stage_notes: [n] }));
+        const blockedCustom = payload.coach.custom_items.filter((c) => hit({ coach: { ...bare.coach, custom_items: [c] } })).map((c) => c.text);
+        const blockedPriceLogs = priceLogProblems(payload, state.finance || {});
+        const where = [
+          blocked.length ? `物件 ${blocked.join("、")}` : "",
+          blockedNotes.length ? `階段筆記（${blockedNotes.map((n) => `${n.stage_id} ${String(n.at).slice(0, 10)}`).join("、")}）` : "",
+          blockedCustom.length ? `自訂題目（${blockedCustom.join("、")}）` : "",
+          blockedPriceLogs.length ? `問價紀錄（${blockedPriceLogs.map((p) => `物件 ${p.property_code} ${p.date} ${p.kind}`).join("、")}）` : ""
+        ].filter(Boolean);
+        return {
+          ok: false,
+          error: where.length
+            ? `匯出內容被擋下：${where.join("、")} 的文字含有不能送出的內容，請先改寫或刪掉再匯出`
+            : "匯出內容被擋下：含有不能送出的內容",
+          hits: prepared.hits,
+          blockedProperties: blocked,
+          blockedStageNotes: blockedNotes.map((n) => ({ stage_id: n.stage_id, at: n.at })),
+          blockedCustomItems: blockedCustom,
+          blockedPriceLogs: blockedPriceLogs.map((p) => ({ property_code: p.property_code, date: p.date, kind: p.kind }))
+        };
+      }
+      return {
+        ok: true,
+        approved: true,
+        prepared,
+        text: prepared.text,
+        filename: notesFileName(nowMs),
+        summary: {
+          properties: payload.properties.length,
+          areas: payload.areas.length,
+          counted: payload.counted_total,
+          skippedStretch,
+          skippedNotes,
+          stageNotes: payload.stage_notes.length,
+          priceLogs: payload.properties.reduce((n, p) => n + p.price_log.length, 0)
+        }
+      };
     });
   }
 
@@ -1979,6 +2157,21 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     });
   }
 
+  /**
+   * 現場先確認帶進來的開價、登記總坪、車位（已帶入的值可直接按「對」）：只記「這次看房確認過哪幾項」，不改物件資料（第 12 輪 U3）。
+   */
+  async function confirmOnsiteFields(viewingId, keys = []) {
+    return command("confirmOnsiteFields", async (draft) => {
+      const v = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
+      if (!v) return { ok: false, error: "尚未選定看房" };
+      const allowed = ["ask_total", "ping_total", "parking"];
+      const list = (Array.isArray(keys) ? keys : [keys]).filter((k) => allowed.includes(k));
+      if (!list.length) return { ok: false, error: "不認得要確認的項目" };
+      v.onsite_confirmed = { ...(v.onsite_confirmed || {}), ...Object.fromEntries(list.map((k) => [k, true])) };
+      return { ok: true, confirmed: v.onsite_confirmed };
+    });
+  }
+
   async function addViewing(propertyId, kind = "複看") {
     return command("addViewing", async (draft, tx) => {
       const p = draft.properties.find((x) => x.id === propertyId);
@@ -1998,6 +2191,430 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       draft.viewings.push(v);
       draft.currentViewingId = v.id;
       return { ok: true, viewing: v };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // 第 13 輪：口袋教練（C2、C4）與問價紀錄（C5）。全部經 command() 寫入，畫面不得直接改狀態。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 使用者打的文字之後會進「匯出到筆記」，所以存之前先過和匯出同一道出口閘門：
+   * 含可承受上限、財務數字、延伸帶物件或個資的文字不給存，才不會存了卻永遠匯不出去。
+   */
+  function notesTextProblem(state, payload) {
+    const gate = prepareOutbound({ recipient: "notes", state, notesPayload: payload });
+    return gate.ok ? null : "這段文字含有不能送出的內容（可承受上限、財務數字、延伸帶物件或個資），請改寫後再存";
+  }
+
+  /** 切換目前階段（使用者手動切換）。 */
+  async function setCoachStage(stageId) {
+    return command("setCoachStage", async (draft) => {
+      const info = stagesInfo(draft.methodPack);
+      if (!info.enabled) return { ok: false, error: "這個方法包沒有教練內容" };
+      const st = info.stages.find((s) => s.id === stageId);
+      if (!st) return { ok: false, error: "找不到這個階段" };
+      draft.coach = { ...normalizeCoach(draft.coach), current_stage: st.id };
+      return { ok: true, stage: st.id };
+    });
+  }
+
+  /** 勾選或取消勾選一個步驟；勾選時記下今天的日期（手機的本地日期）。步驟代號必須是目前方法包裡有的。 */
+  async function setCoachStepDone(stepId, done = true) {
+    return command("setCoachStepDone", async (draft) => {
+      const info = stagesInfo(draft.methodPack);
+      if (!info.enabled) return { ok: false, error: "這個方法包沒有教練內容" };
+      if (!info.stages.some((s) => s.steps.some((st) => st.id === stepId))) return { ok: false, error: "找不到這個步驟" };
+      const coach = normalizeCoach(draft.coach);
+      const steps = { ...coach.steps_done };
+      if (done) steps[stepId] = localDate(now());
+      else delete steps[stepId];
+      draft.coach = { ...coach, steps_done: steps };
+      return { ok: true, done: Boolean(done), date: steps[stepId] || null };
+    });
+  }
+
+  /** 完成這個階段：必要步驟都勾完才行；成功後目前階段換成下一階段（最後一個階段就留在原地）。 */
+  async function completeCoachStage(stageId) {
+    return command("completeCoachStage", async (draft) => {
+      const info = stagesInfo(draft.methodPack);
+      if (!info.enabled) return { ok: false, error: "這個方法包沒有教練內容" };
+      const st = info.stages.find((s) => s.id === stageId);
+      if (!st) return { ok: false, error: "找不到這個階段" };
+      const coach = normalizeCoach(draft.coach);
+      if (!stageProgress(st, coach).allRequiredDone) return { ok: false, error: "這個階段還有必要步驟沒勾完" };
+      const next = info.stages.find((s) => s.order > st.order) || null;
+      draft.coach = { ...coach, current_stage: (next || st).id };
+      return { ok: true, next: next ? next.id : null };
+    });
+  }
+
+  /** 存一則階段筆記。可以關聯一間物件；文字過個資與出口閘門的檢查。延伸帶物件的筆記只留在手機，不會匯出。 */
+  async function addStageNote({ stage_id, property_code, text } = {}) {
+    return command("addStageNote", async (draft) => {
+      const info = stagesInfo(draft.methodPack);
+      if (!info.enabled) return { ok: false, error: "這個方法包沒有教練內容" };
+      if (!info.stages.some((s) => s.id === stage_id)) return { ok: false, error: "找不到這個階段" };
+      const body = String(text ?? "").trim();
+      if (!body) return { ok: false, error: "請先寫下要記的內容" };
+      const norm = normalizeValue("stage_note", "text", body);
+      if (norm.state !== "ok") return { ok: false, error: norm.error || "這段文字不能存" };
+      const code = String(property_code ?? "").trim();
+      const prop = code ? draft.properties.find((p) => p.id === code) : null;
+      if (code && !prop) return { ok: false, error: "找不到這間物件" };
+      const localOnly = prop ? isStretchProperty(prop, draft.finance) : false;
+      if (!localOnly) {
+        const problem = notesTextProblem(draft, { stage_notes: [{ stage_id, text: body }] });
+        if (problem) return { ok: false, error: problem };
+      }
+      const coach = normalizeCoach(draft.coach);
+      const note = { id: nid("sn"), stage_id, ...(code ? { property_code: code } : {}), at: new Date(now()).toISOString(), text: norm.value };
+      draft.coach = { ...coach, stage_notes: [...coach.stage_notes, note] };
+      return { ok: true, note, localOnly };
+    });
+  }
+
+  async function removeStageNote(id) {
+    return command("removeStageNote", async (draft) => {
+      const coach = normalizeCoach(draft.coach);
+      if (!coach.stage_notes.some((n) => n.id === id)) return { ok: false, error: "找不到這則筆記" };
+      draft.coach = { ...coach, stage_notes: coach.stage_notes.filter((n) => n.id !== id) };
+      return { ok: true };
+    });
+  }
+
+  /**
+   * 新增一筆問價紀錄（C5）：日期、類型、金額（萬，選填）、誰說的、備註。金額照欄位規格表的規則解析；
+   * 文字過個資與出口閘門的檢查（問價紀錄會進匯出到筆記）。紀錄不會出現在任何系統產生的草稿裡。
+   */
+  async function addPriceLog({ property_id, date, kind, amount, who, note } = {}) {
+    return command("addPriceLog", async (draft) => {
+      const prop = draft.properties.find((p) => p.id === property_id);
+      if (!prop) return { ok: false, error: "找不到這間物件" };
+      const at = new Date(now()).toISOString();
+      const dateRaw = date === undefined || date === null || String(date).trim() === "" ? localDate(now()) : date;
+      const fields = { date: dateRaw, kind, amount, who, note };
+      const out = {};
+      for (const [k, v] of Object.entries(fields)) {
+        const r = normalizeValue("price_log", k, v);
+        if (r.state === "invalid") return { ok: false, error: `${k === "date" ? "日期" : k === "kind" ? "類型" : k === "amount" ? "金額" : k === "who" ? "誰說的" : "備註"}：${r.error}`, errors: [{ field: k, message: r.error }] };
+        out[k] = r.state === "ok" ? r.value : null;
+      }
+      const localOnly = isStretchProperty(prop, draft.finance);
+      if (!localOnly) {
+        // 保存與匯出共用同一個判斷（scanPriceLogEntry）：金額當成「萬」的數字，和私密財務數字比對（F-R14-02）
+        const entry = { property_code: prop.id, date: out.date, kind: out.kind, amount: out.amount, who: out.who || "", note: out.note || "" };
+        const scanned = scanPriceLogEntry(entry, draft.finance);
+        if (scanned.amountHit) return { ok: false, error: PRICE_LOG_AMOUNT_MESSAGE, errors: [{ field: "amount", message: PRICE_LOG_AMOUNT_MESSAGE }] };
+        const problem = notesTextProblem(draft, { price_log: [entry] });
+        if (problem) return { ok: false, error: problem };
+      }
+      const row = { id: nid("pl"), property_id: prop.id, date: out.date, kind: out.kind, amount: out.amount, who: out.who || "", note: out.note || "", at };
+      draft.priceLog = [...(draft.priceLog || []), row];
+      return { ok: true, entry: row, localOnly };
+    });
+  }
+
+  async function removePriceLog(id) {
+    return command("removePriceLog", async (draft) => {
+      if (!(draft.priceLog || []).some((r) => r.id === id)) return { ok: false, error: "找不到這筆問價紀錄" };
+      draft.priceLog = draft.priceLog.filter((r) => r.id !== id);
+      return { ok: true };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // 第 13 輪 E2 到 E7：現場路線分站。全部經 command() 寫入；站的設定與每一間的答案都存在看房紀錄裡（viewing.sites、viewing.responses）。
+  // -------------------------------------------------------------------------
+
+  /** 這次看房的路線站材料：題目、站的定義、物件。方法包沒有路線站時 defs 是空的。 */
+  function siteContext(draft, viewing) {
+    const items = itemsForViewing(draft, viewing);
+    const hidden = normalizeCoach(draft.coach).hidden_items;
+    const defs = routeStations(draft.methodPack, items, hidden);
+    const property = draft.properties.find((p) => p.id === viewing.property_id) || {};
+    return { items, defs, property };
+  }
+
+  /** 看房紀錄還沒有站的設定就依方法包與物件的房數、衛浴數建立；方法包沒有路線站就什麼都不建。 */
+  function ensureSitesIn(draft, viewing) {
+    if (viewing.sites && Array.isArray(viewing.sites.stations)) return true;
+    const { defs, property } = siteContext(draft, viewing);
+    if (!defs.length) return false;
+    viewing.sites = buildSites(defs, property);
+    return true;
+  }
+
+  function siteView(draft, viewingId) {
+    const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
+    if (!viewing) return { error: "尚未選定看房" };
+    ensureSitesIn(draft, viewing);
+    const ctx = siteContext(draft, viewing);
+    const stations = ctx.defs.length ? resolveStations(viewing.sites, ctx.defs, ctx.property) : [];
+    return { viewing, ...ctx, stations };
+  }
+
+  /** 使用者自己加的題目（以後每間都問的在教練狀態裡，只這間的在這次看房裡）。 */
+  function customItemsOf(draft, viewing) {
+    return [...normalizeCoach(draft.coach).custom_items, ...(Array.isArray(viewing?.sites?.custom) ? viewing.sites.custom : [])];
+  }
+
+  function recordValue(value) {
+    if (value === null || value === undefined || value === "") return null;
+    if (typeof value === "object") {
+      const rec = { ...value };
+      if (rec.status === undefined && rec.value !== undefined) rec.status = rec.value;
+      if (rec.value === undefined && rec.status !== undefined) rec.value = rec.status;
+      return rec.status === "" || rec.status === undefined ? null : rec;
+    }
+    return { status: String(value), value: String(value) };
+  }
+
+  /** 建立這次看房的路線站（開始現場時，依物件的房數與衛浴數；沒有數字就先建 1 個）。 */
+  async function ensureSites(viewingId) {
+    return command("ensureSites", async (draft) => {
+      const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
+      if (!viewing) return { ok: false, error: "尚未選定看房" };
+      const made = ensureSitesIn(draft, viewing);
+      return { ok: true, none: !made, stations: viewing.sites?.stations?.length || 0 };
+    });
+  }
+
+  /**
+   * 寫一題在某一站的答案（那一間）。可重複的站（房間、浴室）答案存在「題目代號@站代號」，整題的答案（計分與計入一間看的那一格）重算成最嚴重的那一間；
+   * 使用者自己加的題目不計分、不影響計入一間，另外存。
+   */
+  async function setSiteResponse(viewingId, itemId, stationKey, value) {
+    return command("setSiteResponse", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const { viewing, stations } = view;
+      const custom = customItemsOf(draft, viewing).find((c) => c.id === itemId);
+      const station = stations.find((s) => s.key === stationKey) || (!custom ? stations.find((s) => s.def.itemIds.includes(itemId)) : null);
+      if (!custom && !(view.items.some((i) => i.id === itemId))) return { ok: false, error: "找不到這一題" };
+      const key = responseKeyOf(itemId, station);
+      const rec = recordValue(value);
+      const bag = custom ? "custom_answers" : "responses";
+      viewing[bag] = { ...(viewing[bag] || {}) };
+      if (rec) viewing[bag][key] = rec;
+      else delete viewing[bag][key];
+      if (!custom && station?.def.repeatable) viewing.responses = recomputeAggregates(viewing.responses || {}, stations);
+      return { ok: true, key };
+    });
+  }
+
+  /** 可重複的站再加一間（例如多一間房）。 */
+  async function addStation(viewingId, stepId) {
+    return command("addStation", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const { viewing, defs, stations, property } = view;
+      const def = defs.find((d) => d.stepId === stepId);
+      if (!def || !def.repeatable) return { ok: false, error: "這一站不能再加一間" };
+      const mine = stations.filter((s) => s.stepId === stepId);
+      if (mine.length >= MAX_INSTANCES) return { ok: false, error: `最多 ${MAX_INSTANCES} 間` };
+      const sites = viewing.sites;
+      const n = Math.max(toFiniteNumber(sites.next_n?.[stepId]) || 1, ...mine.map((s) => s.n + 1));
+      const added = { key: stationKeyOf(def, n), step_id: stepId, n, name: stationNameOf(def, n) };
+      const at = sites.stations.map((s) => s.step_id).lastIndexOf(stepId);
+      const next = [...sites.stations];
+      next.splice(at < 0 ? next.length : at + 1, 0, added);
+      viewing.sites = { ...sites, stations: next, next_n: { ...(sites.next_n || {}), [stepId]: n + 1 } };
+      const all = resolveStations(viewing.sites, defs, property);
+      viewing.responses = recomputeAggregates(viewing.responses || {}, all);
+      return { ok: true, key: added.key, name: added.name };
+    });
+  }
+
+  /**
+   * 刪掉可重複站的一間。刪之前要確認：沒有 confirmed 就只回傳「會一起刪掉哪些答案與照片」，什麼都不改。
+   * 至少要留一間；這一間的答案與照片（含照片檔）一起刪掉，整題的答案重算。
+   */
+  async function removeStation(viewingId, stationKey, { confirmed = false } = {}) {
+    return command("removeStation", async (draft, tx) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const { viewing, defs, stations, property } = view;
+      const station = stations.find((s) => s.key === stationKey);
+      if (!station || !station.def.repeatable) return { ok: false, error: "只有房間、浴室這種有好幾間的站可以刪掉一間" };
+      if (stations.filter((s) => s.stepId === station.stepId).length <= 1) return { ok: false, error: "至少要留一間；這間不需要的話，請把題目標成不適用" };
+      const impact = stationImpact(viewing, station);
+      if (confirmed !== true) return { ok: false, needsConfirm: true, impact: { ...impact, name: station.name }, error: "刪掉之前請先確認" };
+      const suffix = `@${station.key}`;
+      viewing.responses = Object.fromEntries(Object.entries(viewing.responses || {}).filter(([k]) => !k.endsWith(suffix)));
+      viewing.custom_answers = Object.fromEntries(Object.entries(viewing.custom_answers || {}).filter(([k]) => !k.endsWith(suffix)));
+      const gone = new Set((viewing.photos || []).filter((p) => p.station_key === station.key).map((p) => p.id));
+      for (const m of draft.media || []) if (m && m.viewing_id === viewing.id && m.station_key === station.key) gone.add(m.id);
+      viewing.photos = (viewing.photos || []).filter((p) => p.station_key !== station.key);
+      draft.media = (draft.media || []).filter((m) => !gone.has(m.id));
+      for (const id of gone) tx.deletes.push({ store: "media", id });
+      viewing.sites = { ...viewing.sites, stations: viewing.sites.stations.filter((s) => s.key !== station.key) };
+      viewing.responses = recomputeAggregates(viewing.responses || {}, resolveStations(viewing.sites, defs, property));
+      return { ok: true, removed: station.name, impact };
+    });
+  }
+
+  async function renameStation(viewingId, stationKey, name) {
+    return command("renameStation", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const text = String(name ?? "").trim();
+      if (!text) return { ok: false, error: "站名不能空白" };
+      if (text.length > 20) return { ok: false, error: "站名最多 20 個字" };
+      const norm = normalizeValue("coach_custom_item", "text", text);
+      if (norm.state !== "ok") return { ok: false, error: norm.error || "這個站名不能用" };
+      const at = view.viewing.sites.stations.findIndex((s) => s.key === stationKey);
+      if (at < 0) return { ok: false, error: "找不到這一站" };
+      const stations = [...view.viewing.sites.stations];
+      stations[at] = { ...stations[at], name: norm.value };
+      view.viewing.sites = { ...view.viewing.sites, stations };
+      return { ok: true, name: norm.value };
+    });
+  }
+
+  /** 站的順序上下移動（只影響這次與之後的顯示順序，不影響答案）。 */
+  async function moveStation(viewingId, stationKey, delta) {
+    return command("moveStation", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const list = [...view.viewing.sites.stations];
+      const at = list.findIndex((s) => s.key === stationKey);
+      const to = at + (delta < 0 ? -1 : 1);
+      if (at < 0 || to < 0 || to >= list.length) return { ok: false, error: "已經在最上面或最下面了" };
+      [list[at], list[to]] = [list[to], list[at]];
+      view.viewing.sites = { ...view.viewing.sites, stations: list };
+      return { ok: true };
+    });
+  }
+
+  /** 「這站都正常」：只把這一站（那一間）還沒作答、選項含正常、無問題或符合的題目一次填好；一票否決類的題目不帶過。 */
+  async function markStationNormal(viewingId, stationKey) {
+    return command("markStationNormal", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const { viewing, stations } = view;
+      const station = stations.find((s) => s.key === stationKey);
+      if (!station) return { ok: false, error: "找不到這一站" };
+      const items = stationItems(station, { customAll: normalizeCoach(draft.coach).custom_items, customHere: viewing.sites?.custom || [], hiddenIds: normalizeCoach(draft.coach).hidden_items });
+      const plan = normalFillPlan(viewing, station, items);
+      for (const f of plan.fill) {
+        const bag = f.item.custom ? "custom_answers" : "responses";
+        viewing[bag] = { ...(viewing[bag] || {}), [f.key]: { status: f.value, value: f.value } };
+      }
+      if (station.def.repeatable) viewing.responses = recomputeAggregates(viewing.responses || {}, stations);
+      return { ok: true, filled: plan.fill.length, skippedVeto: plan.skippedVeto };
+    });
+  }
+
+  /**
+   * 加一題自訂題目（文字加選項，預設 正常、有問題、待查）。scope 是 "this"（只這間）或 "all"（以後每間都問，存進使用者自訂清單）。
+   * 自訂題目不計分、不影響計入一間；文字過個資與出口閘門（以後每間都問的會進匯出到筆記）。
+   */
+  async function addCustomItem({ viewingId, stepId, text, options, scope = "this" } = {}) {
+    return command("addCustomItem", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      if (!view.defs.some((d) => d.stepId === stepId)) return { ok: false, error: "找不到這一站" };
+      const body = String(text ?? "").trim();
+      if (!body) return { ok: false, error: "請先寫下要問的題目" };
+      const norm = normalizeValue("coach_custom_item", "text", body);
+      if (norm.state !== "ok") return { ok: false, error: norm.error || "這段文字不能存" };
+      const rawOpts = Array.isArray(options) ? options : String(options ?? "").split(/[,，、\s]+/);
+      const opts = [...new Set(rawOpts.map((o) => String(o).trim()).filter(Boolean))];
+      const finalOpts = opts.length ? opts : [...DEFAULT_CUSTOM_OPTIONS];
+      if (finalOpts.length < 2 || finalOpts.length > 6) return { ok: false, error: "選項要有 2 到 6 個" };
+      for (const o of finalOpts) {
+        const r = normalizeValue("coach_custom_item", "text", o);
+        if (r.state !== "ok" || o.length > 12) return { ok: false, error: "每個選項最多 12 個字，而且不能放個資" };
+      }
+      if (scope !== "this" && scope !== "all") return { ok: false, error: "請選「只這間」或「以後每間都問」" };
+      const item = { id: nid("ci"), text: norm.value, options: finalOpts, step_id: stepId };
+      if (scope === "all") {
+        const problem = notesTextProblem(draft, { coach: { custom_items: [{ text: item.text, options: item.options, step_id: stepId }] } });
+        if (problem) return { ok: false, error: problem };
+        const coach = normalizeCoach(draft.coach);
+        draft.coach = { ...coach, custom_items: [...coach.custom_items, item] };
+      } else {
+        view.viewing.sites = { ...view.viewing.sites, custom: [...(view.viewing.sites.custom || []), item] };
+      }
+      return { ok: true, item, scope };
+    });
+  }
+
+  async function removeCustomItem({ id } = {}) {
+    return command("removeCustomItem", async (draft) => {
+      const coach = normalizeCoach(draft.coach);
+      let found = false;
+      if (coach.custom_items.some((c) => c.id === id)) {
+        draft.coach = { ...coach, custom_items: coach.custom_items.filter((c) => c.id !== id) };
+        found = true;
+      }
+      for (const v of draft.viewings) {
+        if (Array.isArray(v.sites?.custom) && v.sites.custom.some((c) => c.id === id)) {
+          v.sites = { ...v.sites, custom: v.sites.custom.filter((c) => c.id !== id) };
+          found = true;
+        }
+        if (v.custom_answers) v.custom_answers = Object.fromEntries(Object.entries(v.custom_answers).filter(([k]) => k !== id && !k.startsWith(`${id}@`)));
+      }
+      return found ? { ok: true } : { ok: false, error: "找不到這個自訂題目" };
+    });
+  }
+
+  /** 選做題可隱藏（使用者偏好，存在教練狀態裡）；必做題不能隱藏，只能標「不適用」並寫一句原因。 */
+  async function setItemHidden(itemId, hidden = true) {
+    return command("setItemHidden", async (draft) => {
+      const item = packChecklist(draft).find((i) => i && i.id === itemId);
+      if (!item) return { ok: false, error: "找不到這一題" };
+      if (item.core === true) return { ok: false, error: "必做題不能隱藏，只能標「不適用」並寫一句原因" };
+      const coach = normalizeCoach(draft.coach);
+      const set = new Set(coach.hidden_items);
+      if (hidden) set.add(itemId);
+      else set.delete(itemId);
+      draft.coach = { ...coach, hidden_items: [...set] };
+      return { ok: true, hidden: Boolean(hidden) };
+    });
+  }
+
+  /** 把一題標成「不適用」並寫一句原因（必做題一定要寫原因；仍受現場不適用最多 2 項的計入規則）。 */
+  async function markItemNotApplicable({ viewingId, itemId, stationKey, reason } = {}) {
+    return command("markItemNotApplicable", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const { viewing, stations } = view;
+      const custom = customItemsOf(draft, viewing).find((c) => c.id === itemId);
+      const item = custom || view.items.find((i) => i.id === itemId);
+      if (!item) return { ok: false, error: "找不到這一題" };
+      const why = String(reason ?? "").trim();
+      if (item.core === true && !why) return { ok: false, error: "必做題標不適用，要寫一句原因" };
+      if (why.length > 60) return { ok: false, error: "原因請寫在 60 個字以內" };
+      const norm = why ? normalizeValue("coach_custom_item", "text", why) : { state: "ok", value: "" };
+      if (norm.state !== "ok") return { ok: false, error: norm.error || "這段原因不能存" };
+      const station = stations.find((s) => s.key === stationKey) || (!custom ? stations.find((s) => s.def.itemIds.includes(itemId)) : null);
+      const key = responseKeyOf(itemId, station);
+      const bag = custom ? "custom_answers" : "responses";
+      viewing[bag] = { ...(viewing[bag] || {}), [key]: { status: "不適用", value: "不適用", reason: norm.value } };
+      if (!custom && station?.def.repeatable) viewing.responses = recomputeAggregates(viewing.responses || {}, stations);
+      return { ok: true };
+    });
+  }
+
+  /** 「先跳過，標待核」：把遺漏清單裡的題目一次標成待核（已經有答案的不動）。 */
+  async function markMissingPending(viewingId, targets = []) {
+    return command("markMissingPending", async (draft) => {
+      const view = siteView(draft, viewingId);
+      if (view.error) return { ok: false, error: view.error };
+      const { viewing, stations } = view;
+      let n = 0;
+      for (const t of Array.isArray(targets) ? targets : []) {
+        if (!view.items.some((i) => i.id === t.itemId)) continue;
+        const station = stations.find((s) => s.key === t.stationKey) || null;
+        const key = station ? responseKeyOf(t.itemId, station) : t.itemId;
+        if (responseValue(viewing.responses?.[key]).filled) continue;
+        viewing.responses = { ...(viewing.responses || {}), [key]: { status: "待核", value: "待核" } };
+        n += 1;
+      }
+      if (stations.length) viewing.responses = recomputeAggregates(viewing.responses || {}, stations);
+      return { ok: true, marked: n };
     });
   }
 
@@ -2034,6 +2651,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     startCoolingFromChange,
     previewImport,
     confirmImport,
+    buildNotesExport,
     restorePreviousBatch,
     setSelectedSlot,
     loadMethodPack,
@@ -2058,7 +2676,27 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     listingToProperty,
     setMainPartner,
     transferAgent,
-    addViewing
+    addViewing,
+    confirmOnsiteFields,
+    setCoachStage,
+    setCoachStepDone,
+    completeCoachStage,
+    addStageNote,
+    removeStageNote,
+    addPriceLog,
+    removePriceLog,
+    ensureSites,
+    setSiteResponse,
+    addStation,
+    removeStation,
+    renameStation,
+    moveStation,
+    markStationNormal,
+    addCustomItem,
+    removeCustomItem,
+    setItemHidden,
+    markItemNotApplicable,
+    markMissingPending
   };
   if (inTest) api.seedForTest = seedForTest;
   return api;

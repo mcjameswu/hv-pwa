@@ -12,6 +12,31 @@ export const TIMING_OPTIONS = [0, 1, 2];
 
 const YES_NO = ["是", "否"];
 
+/** 問價紀錄的類型（第 13 輪 C5）：對方開價、我方詢問、我方回應、仲介轉述、斡旋。 */
+export const PRICE_LOG_KINDS = ["對方開價", "我方詢問", "我方回應", "仲介轉述", "斡旋"];
+
+/** 筆記系統裡待看物件的狀態（第 12 輪）：待看、已約、已看、淘汰、觀察。 */
+export const NOTES_STATUSES = ["待看", "已約", "已看", "淘汰", "觀察"];
+
+/**
+ * 匯入檔「待看物件」列（import_v1 的 properties）裡，欄位名稱和物件資料表不同的三個：
+ * property_code 對應物件代號 id，parking_price 對應車位開價 parking_price_ask，mgmt_fee 對應管理費 mgmt_fee_yuan（元／月）。
+ * 白話：匯入檔用筆記系統那邊的叫法，進到手機之後換成這個 App 原本的欄位名，欄位定義仍然只有 FIELD_TABLES 一份。
+ */
+export const NOTES_KEY_ALIASES = { property_code: "id", parking_price: "parking_price_ask", mgmt_fee: "mgmt_fee_yuan" };
+
+/** 匯入檔「待看物件」每一列可以有的欄位（順序就是範本欄位順序）。 */
+export const NOTES_ROW_KEYS = [
+  "property_code", "notes_status", "area_code", "community_name", "ask_total", "ping_total", "has_parking",
+  "parking_included_in_ask", "parking_ping", "parking_price", "rooms", "age", "floor_note", "product_type",
+  "mgmt_fee", "agent_company", "branch_label", "agent_alias", "planned_date", "source_note", "notes_ref", "notes_updated_at", "baths"
+];
+
+/** 匯入列的欄位名稱換成物件資料表的欄位名稱。 */
+export function notesPropKey(importKey) {
+  return NOTES_KEY_ALIASES[importKey] || importKey;
+}
+
 function spec(s) {
   return s;
 }
@@ -133,7 +158,12 @@ export const FIELD_TABLES = {
     area_type: spec({ type: "enum", enum: ["行政區", "學區", "商圈", "路廊", "車站步行圈", "生活圈錨點"], nullable: true, privacy: "P1" }),
     priority: spec({ type: "integer", min: 1, max: 4, nullable: true, privacy: "P1" }),
     anchor: spec({ type: "string", nullable: true, privacy: "P2", pii: true }),
-    radius_min: spec({ type: "integer", min: 1, max: 30, nullable: true, privacy: "P1" })
+    radius_min: spec({ type: "integer", min: 1, max: 30, nullable: true, privacy: "P1" }),
+    // 第 12 輪：區域功課三項（看房前必做功課的資料來源，只記錄、不計分）與查詢基準日
+    pop_net_inflow: spec({ type: "string", maxLength: 200, nullable: true, privacy: "P1" }),
+    avg_income: spec({ type: "string", maxLength: 200, nullable: true, privacy: "P1" }),
+    cre_report: spec({ type: "string", maxLength: 2000, nullable: true, privacy: "P1" }),
+    research_as_of: spec({ type: "date", nullable: true, privacy: "P1" })
   },
   agents: {
     slot_id: spec({ type: "string", pattern: "^G[123]-[123]$", nullable: true, privacy: "P1" }),
@@ -158,6 +188,8 @@ export const FIELD_TABLES = {
     ask_total: spec({ type: "amount", exclusiveMin: 0, nullable: true, privacy: "P1" }),
     ping_total: spec({ type: "number", exclusiveMin: 0, nullable: true, privacy: "P1" }),
     rooms: spec({ type: "number", min: 0, max: 20, nullable: true, privacy: "P1" }),
+    // 第 13 輪 E7：衛浴數。現場依房數、衛浴數建立對應數量的站；只記錄，不影響評分指紋
+    baths: spec({ type: "number", min: 0, max: 20, nullable: true, privacy: "P1" }),
     parking_price_ask: spec({ type: "amount", min: 0, nullable: true, privacy: "P1" }),
     parking_ping: spec({ type: "number", min: 0, nullable: true, privacy: "P1" }),
     parking_included_in_ask: spec({ type: "boolean", nullable: true, privacy: "P1" }),
@@ -178,7 +210,33 @@ export const FIELD_TABLES = {
     mgmt_fee_yuan: spec({ type: "amount_yuan", min: 0, nullable: true, privacy: "P1" }),
     product_type: spec({ type: "string", nullable: true, privacy: "P1" }),
     prev_ask_total: spec({ type: "amount", exclusiveMin: 0, nullable: true, privacy: "P1" }),
-    community_name: spec({ type: "string", nullable: true, privacy: "P1", pii: true })
+    community_name: spec({ type: "string", nullable: true, privacy: "P1", pii: true }),
+    // 第 12 輪：從筆記匯入的待看物件欄位（只記錄，不影響評分指紋）
+    notes_status: spec({ type: "enum", enum: NOTES_STATUSES, nullable: true, privacy: "P1" }),
+    floor_note: spec({ type: "string", maxLength: 100, nullable: true, privacy: "P1", pii: true }),
+    agent_company: spec({ type: "string", maxLength: 60, nullable: true, privacy: "P1", pii: true }),
+    branch_label: spec({ type: "string", maxLength: 60, nullable: true, privacy: "P1", pii: true }),
+    agent_alias: spec({ type: "string", maxLength: 60, nullable: true, privacy: "P1", pii: true }),
+    planned_date: spec({ type: "date", nullable: true, privacy: "P1" }),
+    source_note: spec({ type: "string", maxLength: 300, nullable: true, privacy: "P1", pii: true }),
+    notes_ref: spec({ type: "string", maxLength: 200, nullable: true, privacy: "P1", pii: false }),
+    notes_updated_at: spec({ type: "datetime", nullable: true, privacy: "P1" }),
+    from_notes: spec({ type: "boolean", nullable: true, privacy: "P1" })
+  },
+  // 第 13 輪 C5：問價紀錄（每間物件一份時間序紀錄）。金額單位是萬，照 amount 的規則解析；誰說的與備註要掃個資
+  price_log: {
+    date: spec({ type: "date", nullable: false, privacy: "P1" }),
+    kind: spec({ type: "enum", enum: PRICE_LOG_KINDS, nullable: false, privacy: "P1" }),
+    amount: spec({ type: "amount", exclusiveMin: 0, nullable: true, privacy: "P1" }),
+    who: spec({ type: "string", maxLength: 30, nullable: true, privacy: "P1", pii: true }),
+    note: spec({ type: "string", maxLength: 300, nullable: true, privacy: "P1", pii: true })
+  },
+  // 第 13 輪 C4：階段筆記的文字；E7：使用者自訂題目的文字（兩者都會進匯出到筆記，所以要掃個資）
+  stage_note: {
+    text: spec({ type: "string", maxLength: 500, nullable: false, privacy: "P1", pii: true })
+  },
+  coach_custom_item: {
+    text: spec({ type: "string", maxLength: 60, nullable: false, privacy: "P1", pii: true })
   },
   visits: {
     id: spec({ type: "string", nullable: false, privacy: "P1", pii: false }),
@@ -359,8 +417,9 @@ const KIND_CACHE = new Map();
 export function numberKindOf(key) {
   if (KIND_CACHE.has(key)) return KIND_CACHE.get(key);
   let kind = "plain";
+  const own = notesPropKey(key); // 待看物件匯入列的 parking_price、mgmt_fee 要照物件資料表的單位解析
   for (const table of Object.values(FIELD_TABLES)) {
-    const t = table[key]?.type;
+    const t = table[own]?.type;
     if (t === "amount") kind = "wan";
     else if (t === "amount_yuan" && kind === "plain") kind = "yuan";
   }

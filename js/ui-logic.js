@@ -140,6 +140,7 @@ export function collectNumericForm(fields, labels = {}, kinds = {}) {
 }
 
 const SETTINGS_NUMBER_LABELS = {
+  goal_commit: "目標間數",
   half_day_hours: "已採用半天長度",
   commute_measured_min: "實測單程分鐘",
   course_b_drafts: "課程 B 十張表初稿張數",
@@ -156,18 +157,18 @@ const yesNo = (checked) => (checked ? "是" : "否");
  * 回傳 { ok, patch: { settings }, errors }。數字欄 0 是合法值；共同決策人的日期與方式必須一起填。
  */
 export function settingsPatchFromForm(v = {}) {
-  const nums = collectNumericForm(
-    {
-      half_day_hours: v.halfDay,
-      commute_measured_min: v.commuteMeasured,
-      course_b_drafts: v.courseBDrafts,
-      overtime_hours_used: v.overtimeHours,
-      remaining_weeks_estimate: v.remainingWeeks,
-      goal_commit_choice: v.goalCommitChoice,
-      course_b_blank_ratio: v.courseBBlank
-    },
-    SETTINGS_NUMBER_LABELS
-  );
+  const numberFields = {
+    half_day_hours: v.halfDay,
+    commute_measured_min: v.commuteMeasured,
+    course_b_drafts: v.courseBDrafts,
+    overtime_hours_used: v.overtimeHours,
+    remaining_weeks_estimate: v.remainingWeeks,
+    goal_commit_choice: v.goalCommitChoice,
+    course_b_blank_ratio: v.courseBBlank
+  };
+  // 目標間數（第 12 輪起設定頁直接顯示）：呼叫端沒傳就不動它，傳了空白才是清空
+  if (v.goalCommit !== undefined) numberFields.goal_commit = v.goalCommit;
+  const nums = collectNumericForm(numberFields, SETTINGS_NUMBER_LABELS);
   const errors = [...nums.errors];
   const at = String(v.partnerConsentAt ?? "").trim();
   const how = String(v.partnerConsentHow ?? "").trim();
@@ -415,9 +416,10 @@ const DIFF_ROW_UNITS = {
   drafts: "份訊息草稿",
   media: "張照片或文件照",
   audioChunks: "段錄音",
-  vetoReleases: "筆否決解除紀錄"
+  vetoReleases: "筆否決解除紀錄",
+  priceLog: "筆問價紀錄"
 };
-const DIFF_SINGLE_NAMES = { settings: "設定", finance: "財務門檻", profile: "理想輪廓", scoring: "評分設定" };
+const DIFF_SINGLE_NAMES = { settings: "設定", finance: "財務門檻", profile: "理想輪廓", scoring: "評分設定", coach: "口袋大叔的進度與筆記" };
 const DIFF_LIST_NAMES = { areas: "區域資料", agents: "仲介名單", travel: "常用地點通勤表", slots: "格位表" };
 
 /**

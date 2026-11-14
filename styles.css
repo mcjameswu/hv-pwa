@@ -105,7 +105,12 @@ label { display: block; margin: 10px 0 4px; font-weight: 600; }
   display: flex; align-items: flex-start; gap: 10px;
   padding: 10px 0; border-bottom: 1px solid var(--line);
 }
-.check-item input { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+.check-item input[type="checkbox"], .check-item input[type="radio"] { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+/* 清單裡的數字與文字輸入框要有可以打字的寬度（以前和勾選框共用 44 像素寬，只塞得下一個字） */
+.check-item input:not([type="checkbox"]):not([type="radio"]) { flex: 1; min-width: 7em; min-height: 44px; }
+.check-item.stack { flex-direction: column; align-items: stretch; }
+.check-item textarea { min-height: 88px; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; margin-right: 8px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .tag { display: inline-block; background: #e7efe9; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
 .tag.red { background: #f8d4d4; color: var(--danger); }
@@ -121,4 +126,121 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
   .nav { max-width: 720px; margin: 0 auto; left: 50%; transform: translateX(-50%); }
 }
 .banner-item { margin-right: 0.6em; }
+
+/* 第 12 輪：簡化版畫面 */
+.nav a { display: flex; align-items: center; justify-content: center; font-size: 15px; min-height: 52px; }
+.big-btn {
+  display: block; width: 100%; min-height: 56px; margin: 8px 0;
+  font-size: 18px; font-weight: 700; text-align: center;
+}
+.stack > * + * { margin-top: 8px; }
+.alert-link {
+  display: block; width: 100%; text-align: left; min-height: var(--tap);
+  background: #f8d4d4; color: var(--danger); border: 1px solid var(--danger);
+  font-weight: 700; border-radius: 12px; padding: 10px 14px; margin: 8px 0;
+}
+.progress-line { font-size: 1.05rem; font-weight: 700; margin: 6px 0; }
+.prop-row {
+  display: block; width: 100%; text-align: left; min-height: var(--tap);
+  background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; margin: 6px 0; color: var(--ink);
+}
+.prop-row .meta { display: block; color: var(--muted); font-size: 0.9rem; }
+.prop-row.on { border: 2px solid var(--brand); background: #e7efe9; }
+.steps { display: flex; align-items: stretch; gap: 2px; margin: 0 0 10px; }
+.steps .step { flex: 1; text-align: center; font-size: 13px; padding: 10px 2px; border-radius: 10px; background: #ece6d6; color: var(--muted); text-decoration: none; min-height: 40px; }
+.steps .step.current { background: var(--brand); color: #fff; font-weight: 700; }
+.steps .step.done { background: #d5e6dc; color: var(--brand); }
+.steps .arrow { align-self: center; color: var(--muted); font-size: 12px; white-space: pre; }
+.stepbar {
+  position: fixed; left: 0; right: 0; bottom: 56px; z-index: 7;
+  display: flex; gap: 8px; padding: 8px 12px; background: #fffdf7; border-top: 1px solid var(--line);
+  max-width: 720px; margin: 0 auto;
+}
+.stepbar button { flex: 1; min-height: 52px; font-size: 17px; }
+.stepbar button.primary { flex: 2; }
+.choices { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; }
+.choice { flex: 1 1 28%; min-height: 48px; padding: 8px 6px; font-size: 16px; }
+.choice.on { background: var(--brand); color: #fff; font-weight: 700; }
+.fab {
+  position: fixed; right: 14px; bottom: 132px; z-index: 8;
+  min-width: 64px; min-height: 64px; border-radius: 32px; font-size: 16px; font-weight: 700;
+  background: var(--brand); color: #fff; box-shadow: var(--shadow);
+}
+.confirm-bar { background: #fff3cd; border: 1px solid #e0c36a; border-radius: 12px; padding: 10px 12px; margin: 8px 0; }
+.confirm-bar button { margin: 6px 6px 0 0; }
+.stepbar.confirming { display: block; }
+.stepbar.confirming .confirm-bar { margin: 0; }
+.stepbar.confirming .confirm-bar p { margin: 0 0 4px; font-weight: 700; }
+.stepbar .confirm-actions { display: flex; gap: 8px; }
+.stepbar .confirm-actions button { margin: 0; }
+.gloss { background: #eef4f0; border-radius: 10px; padding: 6px 10px; }
+details.fold { border: 1px solid var(--line); border-radius: 12px; padding: 4px 10px; margin: 8px 0; background: #fff; }
+details.fold > summary { min-height: var(--tap); display: flex; align-items: center; font-weight: 700; cursor: pointer; list-style: none; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: "▸"; margin-right: 8px; color: var(--brand); }
+details.fold[open] > summary::before { content: "▾"; }
+.btn.on { background: var(--brand); color: #fff; }
+.back-link { display: inline-block; min-height: var(--tap); line-height: var(--tap); text-decoration: none; font-weight: 700; }
+.tag.ok { background: #d5e6dc; color: var(--brand); }
+.menu-link { display: block; text-decoration: none; padding: 14px 12px; margin: 6px 0; min-height: var(--tap); border: 1px solid var(--line); border-radius: 12px; background: #fff; font-weight: 700; }
+.result-card { border: 2px solid var(--brand); }
+.summary-line { font-weight: 600; }
+body.has-stepbar { padding-bottom: 188px; }
 .banner-close { background: transparent; border: 0; color: inherit; font-size: 1.1em; padding: 0 0.3em; cursor: pointer; }
+
+/* 第 13 輪：口袋大叔（階段教練） */
+.coach-card { border: 2px solid var(--brand); background: #f1f7f3; }
+.stage-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.stage-chip { display: inline-flex; align-items: center; min-height: var(--tap); padding: 6px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink); text-decoration: none; font-size: 15px; }
+.stage-chip.viewing { border: 2px solid var(--brand); }
+.stage-chip.on { background: var(--brand); color: #fff; font-weight: 700; }
+.review-banner { background: #fff3cd; color: #5c4300; border: 1px solid #e0c36a; border-radius: 12px; padding: 10px 14px; margin: 8px 0; font-weight: 700; }
+.uncle-card { background: #f1f7f3; border-left: 4px solid var(--brand); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.uncle-card p { margin: 2px 0; }
+.script-card { border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; margin: 10px 0; background: #fff; }
+.script-sec h4 { margin: 8px 0 2px; }
+.script-sec.avoid h4 { color: var(--danger); }
+.script-line { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+.script-line .script-text { flex: 1; }
+.copy-btn { min-width: 64px; }
+.step-row.after-viewing { border-left: 4px solid var(--warn); padding-left: 8px; }
+.step-line { display: flex; align-items: flex-start; gap: 10px; margin: 0; font-weight: 600; }
+.step-line input[type="checkbox"] { width: 44px; height: 44px; min-width: 44px; }
+.link-btn { align-self: flex-start; }
+.stop-card { border: 2px solid var(--danger); background: #fdf1f1; }
+.stop-card h3 { color: var(--danger); }
+.note-item, .pl-item { border-top: 1px solid var(--line); padding: 6px 0; }
+.note-del { min-height: 40px; font-size: 14px; }
+
+/* 第 13 輪：短時高效（路線分站、大叔提醒、請確認、防漏清單） */
+.tip-card { background: #fff3cd; border: 1px solid #e0c36a; border-radius: 10px; padding: 8px 12px; margin: 8px 0; color: #5c4300; }
+.station-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.site-item .site-title { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.site-item .choice { min-height: 48px; }
+.problem-box { background: #fdf1f1; border: 1px solid #e3b4b4; border-radius: 10px; padding: 8px 10px; }
+.problem-box button, .problem-box input { margin-top: 6px; }
+.normal-all { display: block; width: 100%; min-height: 52px; font-size: 17px; font-weight: 700; margin: 8px 0; }
+.item-actions button { min-height: 40px; font-size: 14px; }
+.na-box { display: flex; gap: 8px; align-items: center; }
+.na-box input { flex: 1; }
+.prefill-box { background: #eef6ff; border: 2px solid #8fb7e8; border-radius: 12px; padding: 8px 12px; }
+.prefill-q { margin: 0 0 4px; font-weight: 700; }
+.prefill-title { margin: 0; font-weight: 700; color: #1d4f91; }
+.prefill-text { margin: 4px 0; }
+.missing-card { border: 2px solid var(--warn); background: #fffaf0; }
+.missing-item { display: block; width: 100%; text-align: left; min-height: var(--tap); margin: 6px 0; background: #fff; }
+.confirm-card { border: 2px solid var(--danger); }
+.confirm-bar .confirm-actions { flex-wrap: wrap; }
+
+/* 第 14 輪：手機實走修正（階段地圖一行滑動、走路線頂端精簡、標亮下一步） */
+.hint.small { font-size: 0.85rem; margin: 2px 0; }
+.stage-map { padding: 6px 10px; }
+.stage-chips.strip { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
+.stage-chips.strip .stage-chip { flex: 0 0 auto; white-space: nowrap; font-size: 14px; padding: 4px 10px; }
+.step-row.next-step { border: 2px solid var(--brand); background: #f1f7f3; border-radius: 12px; padding: 8px; }
+.next-tag { align-self: flex-start; margin: 0; }
+.station-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
+.station-bar .station-pos { flex: 1; font-size: 1.05rem; }
+.station-bar .station-all { min-height: var(--tap); flex: 0 0 auto; }
+.station-chips.hidden { display: none; }
