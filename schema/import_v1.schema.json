@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "import_v1.schema.json",
+  "type": "object",
+  "required": ["schema_version", "settings", "finance", "profile", "areas"],
+  "properties": {
+    "schema_version": { "const": "import_v1" },
+    "source_type": {
+      "enum": ["manual_table", "housing_snapshot", "method_pack"]
+    },
+    "settings": {
+      "type": "object",
+      "required": [
+        "partner_gate",
+        "purpose",
+        "goal_commit",
+        "program_weeks",
+        "sessions_per_week",
+        "online_transcribe"
+      ],
+      "properties": {
+        "call_name": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "partner_label": { "type": "string", "minLength": 1, "maxLength": 6 },
+        "partner_gate": { "enum": ["是", "否"] },
+        "purpose": { "enum": ["自住", "出租", "自住兼出租"] },
+        "goal_commit": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "goal_stretch": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "program_weeks": { "type": "integer", "minimum": 1, "maximum": 52 },
+        "sessions_per_week": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "checkpoint_week": { "type": "integer", "minimum": 1, "maximum": 52 },
+        "weekly_hour_cap": { "type": "number", "minimum": 1, "maximum": 60 },
+        "online_transcribe": { "enum": ["是", "否"] },
+        "device_note": { "type": "string" }
+      }
+    },
+    "finance": {
+      "type": "object",
+      "required": [
+        "search_range_high",
+        "down_has_borrowed",
+        "reserve_months",
+        "hold_years_min",
+        "tighten_only",
+        "finance_as_of"
+      ],
+      "properties": {
+        "budget_cap_total": { "type": "number", "exclusiveMinimum": 0 },
+        "search_range_low": { "type": "number", "exclusiveMinimum": 0 },
+        "search_range_high": { "type": "number", "exclusiveMinimum": 0 },
+        "search_ratio_max": { "type": "number", "minimum": 0.5, "maximum": 0.99 },
+        "own_funds_down": { "type": "number", "minimum": 0 },
+        "down_has_borrowed": { "enum": ["是", "否"] },
+        "reserve_months": { "type": "integer", "minimum": 0, "maximum": 36 },
+        "essential_monthly": { "type": "number", "minimum": 0 },
+        "stable_monthly_income": { "type": "number", "minimum": 0 },
+        "max_payment_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "rate_shock_pp": { "type": "number", "minimum": 0, "maximum": 5 },
+        "hold_years_min": { "type": "integer", "minimum": 0, "maximum": 30 },
+        "tighten_only": { "enum": ["是", "否"] },
+        "ltv_assumed": { "type": "number", "minimum": 0, "maximum": 1 },
+        "staged_offer_steps": { "type": "string" },
+        "finance_as_of": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "base_rate_assumed": { "type": "number", "minimum": 0, "maximum": 15 },
+        "loan_years_assumed": { "type": "integer", "minimum": 1, "maximum": 40 },
+        "liquid_funds_total": { "type": "number", "minimum": 0 },
+        "closing_cost_ratio": { "type": "number", "minimum": 0, "maximum": 0.1 },
+        "holding_cost_monthly": { "type": "number", "minimum": 0 },
+        "borrowed_down_monthly": { "type": "number", "minimum": 0 },
+        "borrowed_down_amount": { "type": "number", "minimum": 0 }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": ["target_areas", "deal_breaker"],
+      "properties": {
+        "price_band": { "type": "string" },
+        "target_areas": { "type": "string", "minLength": 1 },
+        "commute_target": { "type": "string" },
+        "walk_to_transit": { "type": "string" },
+        "unit_price_range": { "type": "string" },
+        "area_range": { "type": "string" },
+        "common_ratio_max": { "type": "number", "minimum": 0, "maximum": 60 },
+        "rooms_min": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "rooms_preferred": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "layout_note": { "type": "string" },
+        "parking": { "type": "string" },
+        "floor_pref": { "type": "string" },
+        "age_max": { "type": "integer", "minimum": 0 },
+        "product_type": { "type": "string" },
+        "mgmt_fee_max": { "type": "integer", "minimum": 0 },
+        "amenities": { "type": "string" },
+        "must_have": { "type": "string" },
+        "deal_breaker": { "type": "string", "minLength": 1 }
+      }
+    },
+    "areas": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["area_code", "area_label"],
+        "properties": {
+          "area_code": { "type": "string", "pattern": "^[A-Z]{2}[0-9]{2}$" },
+          "area_label": { "type": "string" },
+          "comps_median_unit": { "type": "number", "minimum": 0 },
+          "comps_q1_unit": { "type": "number", "minimum": 0 },
+          "comps_q3_unit": { "type": "number", "minimum": 0 },
+          "comps_sample_n": { "type": "integer", "minimum": 0 },
+          "nego_rate": { "type": "number", "minimum": 0, "maximum": 0.3 },
+          "commute_min": { "type": "integer", "minimum": 0 },
+          "walk_min": { "type": "integer", "minimum": 0 },
+          "data_as_of": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "area_type": {
+            "enum": ["行政區", "學區", "商圈", "路廊", "車站步行圈", "生活圈錨點"]
+          },
+          "priority": { "type": "integer", "minimum": 1, "maximum": 4 },
+          "anchor": { "type": "string" },
+          "radius_min": { "type": "integer", "minimum": 1, "maximum": 30 }
+        }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "properties": {
+        "w_screen": { "type": "number", "minimum": 0, "maximum": 1 },
+        "w_condition": { "type": "number", "minimum": 0, "maximum": 1 },
+        "w_price": { "type": "number", "minimum": 0, "maximum": 1 },
+        "walk_multiplier": { "type": "number", "minimum": 1, "maximum": 3 },
+        "premium_penalty_per_pct": { "type": "number", "minimum": 0, "maximum": 20 },
+        "fake_price_penalty": { "type": "number", "minimum": 0, "maximum": 30 },
+        "over_cap_action": { "enum": ["淘汰", "觀察"] },
+        "cold_tactics_after_n": { "type": "integer", "minimum": 0 },
+        "stretch_min_total": { "type": "number", "minimum": 0, "maximum": 100 },
+        "stretch_min_price": { "type": "number", "minimum": 0, "maximum": 100 },
+        "about_markup": { "type": "number", "minimum": 1, "maximum": 1.5 }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "maxItems": 9,
+      "items": {
+        "type": "object",
+        "properties": {
+          "slot_id": {
+            "type": "string",
+            "pattern": "^G[123]-[123]$"
+          },
+          "brand": { "type": "string" },
+          "branch_label": { "type": "string" },
+          "chain_or_local": { "enum": ["大型連鎖", "在地"] },
+          "agent_alias": { "type": "string" },
+          "status": {
+            "enum": ["未排", "已約", "已訪", "已完成該組目的", "列為主要合作", "不列合作"]
+          }
+        }
+      }
+    },
+    "travel": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "place_alias": { "type": "string" },
+          "mode": { "enum": ["機車", "汽車", "大眾運輸", "步行"] },
+          "minutes_to_area": { "type": "string" },
+          "minutes_back": { "type": "string" },
+          "as_of": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+        }
+      }
+    }
+  }
+}

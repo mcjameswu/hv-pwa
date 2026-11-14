@@ -1,0 +1,733 @@
+{
+  "meta": {
+    "title": "通用看房清單",
+    "version": "1.0",
+    "id": "method-generic-v1.0",
+    "origin": "通用",
+    "locale": "zh-Hant-TW",
+    "note": "產品內建通用方法包。不是任何課程的整理。項目標記為通用。使用者可匯入自己的方法包取代。"
+  },
+  "checklist": [
+    {
+      "id": "PREP-01",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "地段：物件是否落在你選定的目標區域或生活圈",
+      "how_to_check": "對照匯入的區域代號；仲介主張的學區須附當年度教育局公告才算核實。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "符合",
+        "部分符合",
+        "不符合",
+        "待核"
+      ],
+      "score_group": "screen",
+      "screen_key": "location"
+    },
+    {
+      "id": "PREP-02",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "到強勢辦公區：本區到強勢辦公區的分鐘（平日早上 7:30 開車，門到門）",
+      "how_to_check": "填本區到強勢辦公區的車程分鐘：30 分內符合、31 到 40 分部分符合、超過 40 分不符合。這一項看的是日後接手的買方夠不夠多、好不好賣，不是你自己的通勤；你自己的通勤請看「自住適配」欄，不計分。不要把地址送到地圖服務。",
+      "input_type": "number",
+      "unit": "分鐘",
+      "origin": "通用",
+      "core": true,
+      "score_group": "screen",
+      "screen_key": "commute"
+    },
+    {
+      "id": "PREP-03",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "步行到站：步行 10 分鐘內到能直達強勢辦公區的已營運軌道站",
+      "how_to_check": "只計已通車營運、而且能直達強勢辦公區的軌道站。規劃中、核定、施工中只記在未來交通，不計分。",
+      "input_type": "number",
+      "unit": "分鐘",
+      "origin": "通用",
+      "core": true,
+      "score_group": "screen",
+      "screen_key": "walk"
+    },
+    {
+      "id": "PREP-04",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "單價：拆掉車位後的開價單價（萬／坪）",
+      "how_to_check": "車位含在開價時用（總開價減車位開價）除以（登記總坪減車位坪）。車位開價或車位坪不明則待核。",
+      "input_type": "number",
+      "unit": "萬／坪",
+      "origin": "通用",
+      "core": true,
+      "score_group": "screen",
+      "screen_key": "unit_price"
+    },
+    {
+      "id": "PREP-05",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "總價帶：總價是否不高於你填的合理總價帶上緣",
+      "how_to_check": "低於下緣不扣分，只提醒查核屋況或流通性。未填總價帶則待核。",
+      "input_type": "number",
+      "unit": "萬",
+      "origin": "通用",
+      "core": true,
+      "score_group": "screen",
+      "screen_key": "price_band"
+    },
+    {
+      "id": "PREP-06",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "產品：合法住宅用途、類型與房數",
+      "how_to_check": "看謄本或使用執照的登記用途。房數低於最少房數直接淘汰；達到偏好房數才可記符合。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "符合",
+        "部分符合",
+        "不符合",
+        "待核"
+      ],
+      "score_group": "screen",
+      "screen_key": "product"
+    },
+    {
+      "id": "PREP-07",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "量：社區戶數與目前在售戶數（只記錄，不計分）",
+      "how_to_check": "數同社區在售與總戶數，記來源日期。",
+      "input_type": "number",
+      "unit": "戶",
+      "origin": "通用",
+      "core": true,
+      "score_group": "screen",
+      "screen_key": "volume"
+    },
+    {
+      "id": "PREP-08",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "時間點：若是新區或重劃區，機能與進駐到了哪一段",
+      "how_to_check": "查學校、商場、醫療是否已營運，企業是否已進駐。成熟區可選不適用。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "前段",
+        "中段",
+        "後段",
+        "不適用（成熟區）",
+        "待核"
+      ],
+      "score_group": "screen",
+      "screen_key": "timing"
+    },
+    {
+      "id": "PREP-09",
+      "phase": "看房前",
+      "category": "九項初篩",
+      "text": "現金流：可持有不賣的年數是否達到你填的門檻",
+      "how_to_check": "用私密區的持有年數門檻。低於門檻淘汰。數字待核時不當通過。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "可撐",
+        "勉強",
+        "撐不住",
+        "待核"
+      ],
+      "score_group": "screen",
+      "screen_key": "cashflow"
+    },
+    {
+      "id": "PREP-10",
+      "phase": "看房前",
+      "category": "價格情報",
+      "text": "開價、登記坪數拆分、區域代號都已填且不是待核",
+      "how_to_check": "這三項任一待核，這間不算一間。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "PREP-11",
+      "phase": "看房前",
+      "category": "價格情報",
+      "text": "可比成交：同區同類近期成交筆數、中位單價、資料基準日",
+      "how_to_check": "筆數少於 5 或中位未填，單價與價格組一律待核。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "PREP-12",
+      "phase": "看房前",
+      "category": "作戰準備",
+      "text": "走開條件至少寫一條（例如超過上限、資料不齊、被催當場簽）",
+      "how_to_check": "寫在本機，不出現在給仲介的草稿。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": false
+    },
+    {
+      "id": "PREP-13",
+      "phase": "看房前",
+      "category": "價格情報",
+      "text": "假價格警訊：久無成交卻突然新高、長期無成交、附近多筆法拍",
+      "how_to_check": "只當待查情境。每一項若勾選，價格分會扣分並要求替代解釋。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": false
+    },
+    {
+      "id": "SITE-01",
+      "phase": "現場",
+      "category": "社區",
+      "text": "社區維護：垃圾、梯廳、電梯、公共設施",
+      "how_to_check": "逐項看並拍照。嚴重度：無問題／輕微／嚴重／看不出來。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "community"
+    },
+    {
+      "id": "SITE-02",
+      "phase": "現場",
+      "category": "社區",
+      "text": "管理：管理費、管理基金、管委會是否實際運作",
+      "how_to_check": "看公告欄或詢問，口頭說法標未驗證。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-03",
+      "phase": "現場",
+      "category": "社區",
+      "text": "鄰居與梯廳品質",
+      "how_to_check": "觀察同層門口、雜物、整潔。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "neighbors"
+    },
+    {
+      "id": "SITE-04",
+      "phase": "現場",
+      "category": "社區",
+      "text": "窗外視野、噪音與嫌惡設施",
+      "how_to_check": "每個主要窗戶往外看並拍照。",
+      "input_type": "photo",
+      "origin": "通用",
+      "core": true,
+      "condition_key": "window_view"
+    },
+    {
+      "id": "SITE-05",
+      "phase": "現場",
+      "category": "社區",
+      "text": "步行 10 到 15 分鐘內生活機能",
+      "how_to_check": "市場、醫療、學校、採買、交通，有的就勾。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "condition_key": "amenities"
+    },
+    {
+      "id": "SITE-06",
+      "phase": "現場",
+      "category": "室內",
+      "text": "採光：各房間實際採光，不只聽介紹",
+      "how_to_check": "看方位與窗戶並拍照。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "light_air"
+    },
+    {
+      "id": "SITE-07",
+      "phase": "現場",
+      "category": "室內",
+      "text": "通風：是否有對流",
+      "how_to_check": "打開窗戶感受，看格局。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "light_air"
+    },
+    {
+      "id": "SITE-08",
+      "phase": "現場",
+      "category": "漏水",
+      "text": "漏水：頂樓或天花板",
+      "how_to_check": "看水漬與新補油漆。嚴重則該類 0 分並提示專業驗屋。",
+      "input_type": "photo",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "leak"
+    },
+    {
+      "id": "SITE-09",
+      "phase": "現場",
+      "category": "漏水",
+      "text": "漏水：浴室",
+      "how_to_check": "看天花板、牆角、門框下緣。",
+      "input_type": "photo",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "leak"
+    },
+    {
+      "id": "SITE-10",
+      "phase": "現場",
+      "category": "漏水",
+      "text": "漏水：廚房與水管",
+      "how_to_check": "看水槽下方與管線周邊。",
+      "input_type": "photo",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "leak"
+    },
+    {
+      "id": "SITE-11",
+      "phase": "現場",
+      "category": "漏水",
+      "text": "壁癌或壁面受潮",
+      "how_to_check": "看外牆側、窗框下、櫃子後方。",
+      "input_type": "photo",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "無問題",
+        "輕微",
+        "嚴重",
+        "看不出來"
+      ],
+      "condition_key": "leak"
+    },
+    {
+      "id": "SITE-12",
+      "phase": "現場",
+      "category": "車位",
+      "text": "車位位置、型式與好不好停",
+      "how_to_check": "拍車位編號。權利型態要書面核。",
+      "input_type": "photo",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-13",
+      "phase": "現場",
+      "category": "問仲介",
+      "text": "屋主為什麼賣、預計多久要賣（標未驗證）",
+      "how_to_check": "錄音或寫下原話，預設仲介主張未驗證。",
+      "input_type": "voice",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-14",
+      "phase": "現場",
+      "category": "問仲介",
+      "text": "開價是否含車位與裝修，車位與主建坪怎麼拆",
+      "how_to_check": "記原話，回家對謄本。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-15",
+      "phase": "現場",
+      "category": "問仲介",
+      "text": "現況說明書有沒有、能否提供不動產說明書與謄本",
+      "how_to_check": "不給時在比較頁標紅旗。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-16",
+      "phase": "現場",
+      "category": "守口",
+      "text": "離開前確認：沒有說出上限、可貸金額或急迫程度",
+      "how_to_check": "自我勾選。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-17",
+      "phase": "現場",
+      "category": "守口",
+      "text": "離開前確認：沒有表態非買不可",
+      "how_to_check": "自我勾選。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-18",
+      "phase": "現場",
+      "category": "守口",
+      "text": "離開前確認：沒有在讀完正式文件前付訂或簽約",
+      "how_to_check": "自我勾選。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-19",
+      "phase": "現場",
+      "category": "記錄",
+      "text": "仲介口述錄音，標記為未驗證",
+      "how_to_check": "本機錄音，線上轉文字預設關。",
+      "input_type": "voice",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-20",
+      "phase": "現場",
+      "category": "記錄",
+      "text": "離開後立刻錄一段現場總印象",
+      "how_to_check": "出門後馬上錄。",
+      "input_type": "voice",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-21",
+      "phase": "現場",
+      "category": "室內",
+      "text": "水壓與排水：開水龍頭、沖馬桶",
+      "how_to_check": "每個衛浴試一次。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "SITE-22",
+      "phase": "現場",
+      "category": "室內",
+      "text": "牆面或樑柱裂縫（選做）",
+      "how_to_check": "看樑柱交接與窗角。",
+      "input_type": "photo",
+      "origin": "通用",
+      "core": false
+    },
+    {
+      "id": "REVW-01",
+      "phase": "看房後",
+      "category": "評分",
+      "text": "確認九項初篩自動帶入的結果，不另打星等",
+      "how_to_check": "只確認，有誤再改。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "REVW-02",
+      "phase": "看房後",
+      "category": "評分",
+      "text": "屋況七類分數（採光通風、漏水、鄰居、窗外、社區維護、生活機能、車位與產品）",
+      "how_to_check": "由現場嚴重度帶入，看不出來為待核。",
+      "input_type": "check",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "REVW-03",
+      "phase": "看房後",
+      "category": "價格",
+      "text": "開價相對可比成交的溢價與假價格警訊",
+      "how_to_check": "缺資料標待核，不當 0 分。",
+      "input_type": "number",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "REVW-04",
+      "phase": "看房後",
+      "category": "決策",
+      "text": "決策：淘汰／觀察／入圍／進入談判",
+      "how_to_check": "一票否決命中則淘汰。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true,
+      "options": [
+        "淘汰",
+        "觀察",
+        "入圍",
+        "進入談判"
+      ],
+      "screen_key": "decision"
+    },
+    {
+      "id": "REVW-05",
+      "phase": "看房後",
+      "category": "決策",
+      "text": "淘汰或保留的理由，以及已知與未知",
+      "how_to_check": "寫一句即可。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "REVW-06",
+      "phase": "看房後",
+      "category": "輪廓",
+      "text": "這間讓我更確定想要什麼、不要什麼（確認後才寫入輪廓）",
+      "how_to_check": "建議須使用者按確認才寫入。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": true
+    },
+    {
+      "id": "REVW-07",
+      "phase": "看房後",
+      "category": "文件",
+      "text": "正式文件缺件清單（選做）",
+      "how_to_check": "謄本、使用執照、現況說明書、管理財報。",
+      "input_type": "text",
+      "origin": "通用",
+      "core": false
+    }
+  ],
+  "profile_fields": [
+    {
+      "id": "PF-01",
+      "field": "可承受總價上限",
+      "type": "number",
+      "unit": "萬",
+      "private": true,
+      "origin": "通用",
+      "note": "由財務門檻帶入，不在輪廓頁重複填。"
+    },
+    {
+      "id": "PF-02",
+      "field": "合理總價帶",
+      "type": "range",
+      "unit": "萬",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-03",
+      "field": "目標區域",
+      "type": "list",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-04",
+      "field": "強勢辦公區錨點代稱與上限分鐘",
+      "type": "text+number",
+      "unit": "分鐘",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-05",
+      "field": "步行到交通站上限",
+      "type": "number",
+      "unit": "分鐘",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-06",
+      "field": "單價區間（拆車位）",
+      "type": "range",
+      "unit": "萬／坪",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-07",
+      "field": "面積區間",
+      "type": "range",
+      "unit": "坪",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-08",
+      "field": "公設比上限",
+      "type": "number",
+      "unit": "%",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-09a",
+      "field": "最少房數",
+      "type": "integer",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-09b",
+      "field": "偏好房數",
+      "type": "integer",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-10",
+      "field": "車位需求",
+      "type": "text",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-11",
+      "field": "樓層偏好",
+      "type": "range",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-12",
+      "field": "屋齡上限",
+      "type": "number",
+      "unit": "年",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-13",
+      "field": "產品類型",
+      "type": "multi",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-14",
+      "field": "管理費上限",
+      "type": "number",
+      "unit": "元／月",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-15",
+      "field": "生活機能必備",
+      "type": "multi",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-16",
+      "field": "可撐不賣的年數",
+      "type": "number",
+      "unit": "年",
+      "private": true,
+      "origin": "通用",
+      "note": "由財務門檻持有年數帶入。"
+    },
+    {
+      "id": "PF-17",
+      "field": "必備條件",
+      "type": "list",
+      "origin": "通用"
+    },
+    {
+      "id": "PF-18",
+      "field": "一票否決",
+      "type": "list",
+      "origin": "通用"
+    }
+  ],
+  "key_point_cards": [
+    {
+      "id": "CARD-01",
+      "title": "先核條件再深看",
+      "body": "地段、到強勢辦公區、步行到站、單價、總價帶、產品、時間點、現金流沒過，就不要在現場耗太久。",
+      "origin": "通用"
+    },
+    {
+      "id": "CARD-02",
+      "title": "開價不是成交價",
+      "body": "可比成交要記成交日與查詢日。仲介口述預設未驗證。",
+      "origin": "通用"
+    },
+    {
+      "id": "CARD-03",
+      "title": "上限只放私密區",
+      "body": "可承受總價與分段出價不出現在摘要、草稿或紙本。",
+      "origin": "通用"
+    },
+    {
+      "id": "CARD-04",
+      "title": "不當場簽、不當場付",
+      "body": "帶看確認書先看有沒有服務費或排除他店條款。要約、斡旋、付訂一律回家。",
+      "origin": "通用"
+    },
+    {
+      "id": "CARD-05",
+      "title": "待核不當通過",
+      "body": "沒證據的值不能當 0 分，也不能當過關。",
+      "origin": "通用"
+    },
+    {
+      "id": "CARD-06",
+      "title": "對方說法先當主張",
+      "body": "保證、期限、別人在出，都要書面才能當資料。",
+      "origin": "通用"
+    },
+    {
+      "id": "CARD-07",
+      "title": "離開可以再約",
+      "body": "資料不齊或被催簽約，先結束。回家對完再決定。",
+      "origin": "通用"
+    },
+    {
+      "id": "CARD-08",
+      "title": "照片與錄音是給自己的證據",
+      "body": "每 5 秒寫入本機。線上轉文字要先告知在場的人並取得同意。",
+      "origin": "通用"
+    }
+  ],
+  "scoring": {
+    "weights": {
+      "screen": 0.4,
+      "condition": 0.35,
+      "price": 0.25
+    },
+    "note": "權重可在匯入表 E 分頁調整。待核不當 0 分也不當通過。"
+  }
+}
