@@ -180,7 +180,7 @@ function matchNotParking(line, re, { priceOnly = false } = {}) {
   const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
   for (const m of line.matchAll(g)) {
     const before = line.slice(0, m.index);
-    if (/parkings*$/i.test(before.slice(-10))) continue;
+    if (/parking\s*$/i.test(before.slice(-10))) continue;
     if (priceOnly) {
       const lastPark = before.lastIndexOf("車位");
       if (lastPark >= 0) {
