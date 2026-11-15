@@ -1,5 +1,5 @@
 export const SCHEMA_VERSION = "import_v1";
-export const APP_VERSION = "1.18.0";
+export const APP_VERSION = "1.19.1";
 export const DB_VERSION = 8; // R13：新增口袋教練（coach）與問價紀錄（priceLog）兩張表，資料庫升到第 8 版
 
 export const FIELD_LABELS = {
@@ -78,6 +78,7 @@ export const FIELD_LABELS = {
   parking_price: "車位開價(萬)",
   rooms: "房數",
   baths: "衛浴數",
+  memory_note: "記憶備註",
   age: "屋齡(年)",
   floor_note: "樓層備註",
   mgmt_fee: "管理費(元/月)",

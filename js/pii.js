@@ -48,6 +48,11 @@ export function toHalfwidth(s) {
     .replace(/[‐-―−]/g, "-");
 }
 
+/** 一段文字是不是完整門牌樣式（路街大道加數字加號），自由文字欄位擋地址用（F-R16B-03）。 */
+export function hasAddressPattern(text) {
+  return ADDRESS_RE.test(toHalfwidth(String(text ?? "")));
+}
+
 export function findPii(text) {
   if (text === undefined || text === null) return null;
   const s = toHalfwidth(String(text));
@@ -90,7 +95,7 @@ export const TEXT_FIELDS = {
     "deal_breaker"
   ],
   area: ["area_label", "anchor", "pop_net_inflow", "avg_income", "cre_report"],
-  property: ["property_code", "community_name", "floor_note", "product_type", "agent_company", "branch_label", "agent_alias", "source_note"],
+  property: ["property_code", "community_name", "floor_note", "product_type", "agent_company", "branch_label", "agent_alias", "source_note", "memory_note"],
   agent: ["brand", "branch_label", "agent_alias"],
   travel: ["place_alias", "minutes_to_area", "minutes_back"]
 };

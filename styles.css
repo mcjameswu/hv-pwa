@@ -256,3 +256,25 @@ body.has-stepbar { padding-bottom: 188px; }
 .onb-actions { gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .onb-route { margin: 4px 0 0 1.2em; padding: 0; }
 .onb-done { margin: 0 0 8px; font-weight: 700; }
+
+/* 第 16 輪：看房中工具列（拍照與錄音隨時按得到）、看房中卡、記憶備註小字 */
+.fieldbar {
+  position: fixed; left: 0; right: 0; bottom: 56px; z-index: 8;
+  max-width: 720px; margin: 0 auto; padding: 6px 12px; background: #fffdf7; border-top: 1px solid var(--line);
+}
+body.has-stepbar .fieldbar { bottom: 128px; }
+body.has-fieldbar { padding-bottom: 148px; }
+body.has-fieldbar.has-stepbar { padding-bottom: 260px; }
+.fieldbar-row { display: flex; gap: 8px; }
+.fieldbar .tb-btn { flex: 1; min-height: 56px; font-size: 18px; font-weight: 700; }
+.fieldbar .fab { position: static; right: auto; bottom: auto; min-width: 0; border-radius: 12px; box-shadow: none; }
+.fieldbar .tb-btn.recording { background: var(--danger); border-color: var(--danger); color: #fff; }
+.fieldbar-status { margin: 4px 0 0; min-height: 1.2em; color: var(--muted); font-size: 0.9rem; }
+.fieldbar-confirm { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fieldbar-confirm .check-item { border: 0; padding: 0; flex: 1; }
+.live-card { border: 2px solid var(--brand); background: #f1f7f3; }
+.live-card .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.live-card .row button { flex: 1; min-height: 56px; }
+.prop-row .meta.memo { color: var(--ink); font-size: 0.85rem; }
+.fieldbar.hidden, .fieldbar-confirm.hidden { display: none; }
+.card-preview { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }

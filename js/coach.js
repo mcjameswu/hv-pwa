@@ -171,11 +171,22 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * pwa_done 我已經加好了、builtin_pack 先用內建通用版、tried 我試過了、collapsed 先收起來。
  * 這些只留在手機：匯出到筆記的教練區段是逐欄整理的，不含這一欄（有測試守著）。
  */
-export const ONBOARDING_FLAGS = ["pwa_done", "builtin_pack", "tried", "collapsed"];
+export const ONBOARDING_FLAGS = ["pwa_done", "builtin_pack", "tried", "collapsed", "import_skipped"];
 
 function normalizeOnboarding(raw) {
   const out = {};
   if (isObj(raw)) for (const k of ONBOARDING_FLAGS) if (raw[k] === true) out[k] = true;
+  return out;
+}
+
+/** 第 16 輪 F-R16-21：和筆記同步的時間記錄（上次匯入時間與檔名、上次匯出時間）；只留在手機，不進任何匯出。 */
+function normalizeSync(raw) {
+  const out = {};
+  if (isObj(raw)) {
+    if (typeof raw.last_import_at === "string" && raw.last_import_at) out.last_import_at = raw.last_import_at;
+    if (typeof raw.last_import_name === "string" && raw.last_import_name) out.last_import_name = raw.last_import_name.slice(0, 120);
+    if (typeof raw.last_export_at === "string" && raw.last_export_at) out.last_export_at = raw.last_export_at;
+  }
   return out;
 }
 
@@ -203,6 +214,7 @@ export function normalizeCoach(raw) {
     .filter((i) => isObj(i) && isText(i.id) && isText(i.text) && textList(i.options) && i.options.length >= 2)
     .map((i) => ({ id: i.id, text: i.text, options: [...i.options], step_id: isText(i.step_id) ? i.step_id : null }));
   const onboarding = normalizeOnboarding(c.onboarding);
+  const sync = normalizeSync(c.sync);
   return {
     current_stage: isText(c.current_stage) ? c.current_stage : null,
     steps_done: done,
@@ -210,7 +222,8 @@ export function normalizeCoach(raw) {
     custom_items: custom,
     hidden_items: uniqueTexts(c.hidden_items),
     // 沒有任何標記時不多一個空欄位（舊資料與舊測試看到的形狀不變）
-    ...(Object.keys(onboarding).length ? { onboarding } : {})
+    ...(Object.keys(onboarding).length ? { onboarding } : {}),
+    ...(Object.keys(sync).length ? { sync } : {})
   };
 }
 
@@ -236,7 +249,8 @@ export function mergeCoach(local, incoming) {
     stage_notes: unionById(a.stage_notes, b.stage_notes),
     custom_items: unionById(a.custom_items, b.custom_items),
     hidden_items: uniqueTexts([...a.hidden_items, ...b.hidden_items]),
-    ...(Object.keys({ ...(a.onboarding || {}), ...(b.onboarding || {}) }).length ? { onboarding: { ...(b.onboarding || {}), ...(a.onboarding || {}) } } : {})
+    ...(Object.keys({ ...(a.onboarding || {}), ...(b.onboarding || {}) }).length ? { onboarding: { ...(b.onboarding || {}), ...(a.onboarding || {}) } } : {}),
+    ...(Object.keys({ ...(a.sync || {}), ...(b.sync || {}) }).length ? { sync: { ...(b.sync || {}), ...(a.sync || {}) } } : {})
   };
 }
 

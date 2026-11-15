@@ -368,9 +368,12 @@ export function extractNormalizedRatios(text) {
 /**
  * 緊鄰數字就當成金額的詞（掃描器的 MONEY_WORDS 與這裡共用這一份）。
  * 第 15 輪 F-R15-02：補「月入」「月薪」「年薪」「年收」「年入」，所以「月入12」這種縮寫會被擋。
- * 「月入」後面接「住」「帳」是日期用法（12 月入住、12 月入帳），不是收入，用負向預查排除，避免誤擋。
+ * 第 16 輪 F-R16-42、47：「月入」「年入」後面接「住、帳、厝」，只有在「前面緊接月份或年份的日期寫法」時才排除，
+ * 也就是數字加月（12 月入住、12月入帳、12 月入厝），或去年、今年、明年、前年、後年、數字加年（去年入住 12 日、今年入帳 12 筆）。
+ * 「每月入帳 12」「月入帳面 12」「月入住宿費 12」前面不是日期，照樣當成收入來擋。
+ * 這裡用「回頭看」比對前一個字，所以呼叫處要讓比對看得到數字前後的字（見 hasMoneyContext）。
  */
-export const MONEY_WORD_PATTERN = "收入|支出|月付|借款|持有成本|存款|可動用資金|流動資金|頭期|上限|月入(?![住帳])|月薪|年薪|年收|年入";
+export const MONEY_WORD_PATTERN = String.raw`收入|支出|月付|借款|持有成本|存款|可動用資金|流動資金|頭期|上限|(?<!\d\s?)月入|(?<=\d\s?)月入(?![住帳厝])|月薪|年薪|年收|(?<![去今明前後\d]\s?)年入|(?<=[去今明前後\d]\s?)年入(?![住帳厝])`;
 const MONEY_NEAR = new RegExp(`${MONEY_WORD_PATTERN}|自備`);
 /** 數字前面緊貼的貨幣記號（NT$12,000,000、$600,000、新台幣 600,000）也算金額字詞（F-R11-01）。 */
 const CURRENCY_LEFT = /(?:NT\$|NTD|TWD|\$|＄|新台幣|新臺幣|台幣|臺幣)\s*$/i;
@@ -380,7 +383,8 @@ function hasMoneyContext(text, start, end) {
   const right = text.slice(end, Math.min(text.length, end + 4));
   if (/萬|万|元|千|億/.test(right) || /萬|万|元|千|億/.test(left.slice(-1))) return true;
   if (CURRENCY_LEFT.test(left)) return true;
-  return MONEY_NEAR.test(left) || MONEY_NEAR.test(right);
+  // 第 16 輪：把數字本身放進比對範圍，「回頭看」才看得到「12 月入住」前面的數字（日期寫法不誤擋）
+  return MONEY_NEAR.test(text.slice(Math.max(0, start - 8), Math.min(text.length, end + 4)));
 }
 
 function pushAmount(out, raw, wan, yuan, adjacentMoney) {

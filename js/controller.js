@@ -1,7 +1,7 @@
 /**
  * DOM-free app controller. Screens call these functions; tests use createMemoryDb.
  */
-import { DEFAULT_SCORING, CONDITION_KEYS } from "./defaults.js";
+import { DEFAULT_SCORING, CONDITION_KEYS, FIELD_LABELS } from "./defaults.js";
 import { propertiesForAgentDraft, listingToProperty as listingToPropertyFn, assessPropertyFromState, isStretchProperty, latestScoreFor, latestViewingFor, latestAnswerClearsVeto, mergedEvidenceFor, VETO_KINDS } from "./scoring.js";
 import { runAffordability } from "./affordability.js";
 import { countViewing, uniqueCounted, w3OnsiteAudit, sameDaySoftWarning, responseValue } from "./counting.js";
@@ -10,7 +10,7 @@ import { applyImport, applyGatedThresholdChange, restoreBatch, planImport, thres
 import { validateMethodPack } from "./method-pack.js";
 import { agentDraft, canStartAgencyVisit, transferAgent as transferAgentFn, mainPartnersOk, mainPartnerSlotIds, groupComplete, visitGroupComplete, vis14Score, listingDocsRedFlag } from "./module333.js";
 import { whitelistUploadPack, buildShareSummary } from "./scanner.js";
-import { prepareOutbound, buildUploadPackZip } from "./egress.js";
+import { prepareOutbound, buildUploadPackZip, isUploadablePhoto } from "./egress.js";
 import { w0PlanStartAllowed, checkpointLabel, adoptedHalfDayHours, w3FullJudge, w6FullJudge, w10FullJudge, retroWriteVeto, rowsHaveStartEnd, uniqueAgencyCount, minutesSplit, profileIsReady } from "./checkpoints.js";
 import { cloneValue, mergeAuditLogs, diffDataset } from "./merge.js";
 import { PERSISTED_KEYS, PROPERTY_REF_TABLES, emptyPersisted, pickPersisted } from "./persisted.js";
@@ -22,6 +22,8 @@ import { itemsForViewing, packContentHash, snapshotItems, packChecklist } from "
 import { rankEligible } from "./rank-eligible.js";
 import { planNotesProperties, hasThresholdTables, hasNotesProperties, plainImportSummary, unknownAreaCodesOf } from "./notes-import.js";
 import { buildNotesPayload, notesFileName } from "./notes-export.js";
+import { nextAutoCode } from "./ui-flow.js";
+import { ASK_QUESTIONS } from "./sheet-parse.js";
 import { scanPriceLogEntry, priceLogProblems, PRICE_LOG_AMOUNT_MESSAGE } from "./price-log.js";
 import { stagesInfo, normalizeCoach, mergeCoach, stageProgress, localDate, ONBOARDING_FLAGS } from "./coach.js";
 import { routeStations, buildSites, resolveStations, responseKeyOf, recomputeAggregates, normalFillPlan, stationItems, stationImpact, stationKeyOf, stationNameOf, MAX_INSTANCES, DEFAULT_CUSTOM_OPTIONS } from "./sites.js";
@@ -79,7 +81,9 @@ export const WRITE_COMMANDS = [
   "setItemHidden",
   "markItemNotApplicable",
   "markMissingPending",
-  "setOnboardingFlag"
+  "setOnboardingFlag",
+  "addRecMark",
+  "recordSyncEvent"
 ];
 
 export function emptyState() {
@@ -547,6 +551,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
    * 物件欄位正規化。only（一組欄位名稱）只在更新時用：只驗這次有改的欄位，
    * 沒改的欄位即使是舊的不合法值也保留原值、不報錯（F9-13）。
    */
+  const EXTRA_PROPERTY_TEXT_KEYS = ["memory_note", "floor_note", "agent_company", "branch_label", "agent_alias", "source_note"];
   function normalizePropertyFields(fields, { forUpdate = false, only = null } = {}) {
     const errors = [];
     const out = {};
@@ -572,6 +577,17 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       const b = normalizeValue("properties", "baths", fields.baths);
       if (b.state === "invalid") errors.push({ field: "baths", message: b.error });
       else out.baths = b.state === "ok" ? b.value : null;
+    }
+    // 第 16 輪：同樣只記錄、不放進評分指紋的文字欄位（記憶備註、現場帶看單帶來的樓層、仲介、來源備註），逐欄驗證（含個資掃描與長度）
+    for (const k of EXTRA_PROPERTY_TEXT_KEYS) {
+      if (!(k in fields) || (only && !only.has(k))) continue;
+      const t = normalizeValue("properties", k, fields[k]);
+      if (t.state === "invalid") errors.push({ field: k, message: t.error });
+      else out[k] = t.state === "ok" ? t.value : "";
+    }
+    // 第 16 輪 F-R16-05：現場帶看單上沒有、要問仲介的欄位清單（只收已知的欄位代號；問到填了就會從畫面消失）
+    if (Array.isArray(fields.agent_questions) && (!only || only.has("agent_questions"))) {
+      out.agent_questions = [...new Set(fields.agent_questions.filter((k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(ASK_QUESTIONS, k)))];
     }
     if (fields.deal_breaker_hits && (!only || only.has("deal_breaker_hits"))) out.deal_breaker_hits = fields.deal_breaker_hits;
     if (fields.condition && (!only || only.has("condition"))) out.condition = fields.condition;
@@ -638,7 +654,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
    * 新增物件。預設同時開一筆看房紀錄（舊流程都靠這個）；withViewing 為 false 時只建物件、不開看房紀錄，
    * 「看一間」第一步新增物件用，要按「開始看這間」才建立看房紀錄（第 12 輪 U3）。
    */
-  async function addProperty(fields = {}, { withViewing = true } = {}) {
+  async function addProperty(fields = {}, { withViewing = true, sheetPhoto = null } = {}) {
     return command("addProperty", async (draft, tx) => {
       stopSpeechAndConsent();
       const norm = normalizePropertyFields(fields);
@@ -658,6 +674,19 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
         deal_breaker_hits: fields.deal_breaker_hits || [],
         condition: fields.condition || Object.fromEntries(CONDITION_KEYS.map((k) => [k, null]))
       };
+      // 第 16 輪 F-R16-02：現場帶看單的照片，存成這間新物件的媒體（kind 是 visit_sheet，沒有看房代號）；出口閘門與分享一律排除
+      if (sheetPhoto && sheetPhoto.blob) {
+        let bytes;
+        try {
+          bytes = await toUint8(sheetPhoto.blob);
+        } catch {
+          return { ok: false, error: "帶看單照片無法讀取，請重拍" };
+        }
+        if (!bytes || bytes.length === 0) return { ok: false, error: "帶看單照片是空的，請重拍" };
+        const rec = { id: nid("m"), property_id: p.id, type: "photo", kind: "visit_sheet", name: sheetPhoto.name || "visit-sheet.jpg", size: bytes.length, bytes };
+        tx.mediaPuts.push(rec);
+        draft.media.push(stripBytes(rec));
+      }
       draft.properties.push(p);
       if (!withViewing) return { ok: true, property: p, viewing: null };
       const v = {
@@ -675,6 +704,11 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       draft.currentViewingId = v.id;
       return { ok: true, property: p, viewing: v };
     });
+  }
+
+  /** 第 16 輪 F-R16-51：下一個自動物件代號（H-NNN，延續筆記正本的 H 編號），不和任何現有代號重複。 */
+  function nextPropertyCode() {
+    return nextAutoCode(committed.properties);
   }
 
   async function selectViewing(id) {
@@ -866,6 +900,40 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       viewing.photos.push({ at: new Date(now()).toISOString(), name, bytes: rec.size, id: rec.id, ...(stationKey ? { station_key: String(stationKey) } : {}), ...(itemId ? { item_id: String(itemId) } : {}) });
       draft.media.push(stripBytes(rec));
       return { ok: true, media: stripBytes(rec) };
+    });
+  }
+
+  /**
+   * 第 16 輪 F-R16-55：錄音中換到某一站，在這次看房記一筆標記（錄音開始後第幾秒、站名）。
+   * 只記站名與秒數，不碰音檔；之後看房後頁列出「錄音段落」，筆記匯出也只帶這兩樣。
+   */
+  async function addRecMark({ viewingId, sec, station_key: stationKey, name } = {}) {
+    return command("addRecMark", async (draft) => {
+      const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
+      if (!viewing) return { ok: false, error: "找不到看房紀錄" };
+      const s = toFiniteNumber(sec);
+      if (s === null || s < 0) return { ok: false, error: "錄音秒數不對" };
+      const label = String(name ?? "").trim().slice(0, 40);
+      if (!label) return { ok: false, error: "站名不可空白" };
+      viewing.rec_marks = [...(Array.isArray(viewing.rec_marks) ? viewing.rec_marks : []), { sec: Math.floor(s), station_key: String(stationKey ?? "").slice(0, 40), name: label }];
+      return { ok: true };
+    });
+  }
+
+  /** 第 16 輪 F-R16-21：記下和筆記同步的時間（kind 是 import 或 export；匯入另記檔名）。走單一寫入者，不進任何匯出。 */
+  async function recordSyncEvent(kind, { name = "" } = {}) {
+    return command("recordSyncEvent", async (draft) => {
+      if (kind !== "import" && kind !== "export") return { ok: false, error: "不認得這種同步紀錄" };
+      const coach = normalizeCoach(draft.coach);
+      const at = new Date(now()).toISOString();
+      const sync = { ...(coach.sync || {}) };
+      if (kind === "import") {
+        sync.last_import_at = at;
+        const n = String(name ?? "").trim().slice(0, 120);
+        if (n) sync.last_import_name = n;
+      } else sync.last_export_at = at;
+      draft.coach = { ...coach, sync };
+      return { ok: true, at };
     });
   }
 
@@ -1580,12 +1648,29 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
         // 找出是哪些內容被擋（每一塊各自再過一次閘門，其他塊清空），讓使用者知道要改哪裡
         const bare = { ...payload, properties: [], areas: [], stage_notes: [], coach: { current_stage: null, stages: [], steps_done: [], custom_items: [] } };
         const hit = (part) => !prepareOutbound({ recipient: "notes", state, notesPayload: { ...bare, ...part } }).ok;
-        const blocked = payload.properties.filter((row) => hit({ properties: [row] })).map((row) => row.property_code);
+        const blockedRows = payload.properties.filter((row) => hit({ properties: [row] }));
+        const blocked = blockedRows.map((row) => row.property_code);
+        // 第 16 輪 F-R16-53：進一步說清楚是這間物件的哪一欄（記憶備註、看房後文字、基本欄位的哪一格、問價紀錄），使用者才知道要去改哪裡
+        const blockedFields = [];
+        for (const row of blockedRows) {
+          const base = { property_code: row.property_code };
+          const probes = [
+            ["property_code", "物件代號", {}],
+            ["memory_note", FIELD_LABELS.memory_note, { memory_note: row.memory_note }],
+            ["review_text", "看房後的文字", { review_text: row.review_text }],
+            ["price_log", "問價紀錄", { price_log: row.price_log }],
+            ["rec_marks", "錄音段落", { rec_marks: row.rec_marks }],
+            ...Object.entries(row.basic || {}).map(([k, v]) => [`basic.${k}`, FIELD_LABELS[k] || k, { basic: { [k]: v } }])
+          ];
+          for (const [key, label, part] of probes) {
+            if (hit({ properties: [{ ...base, ...part }] })) blockedFields.push({ property_code: row.property_code, field: key, label });
+          }
+        }
         const blockedNotes = payload.stage_notes.filter((n) => hit({ stage_notes: [n] }));
         const blockedCustom = payload.coach.custom_items.filter((c) => hit({ coach: { ...bare.coach, custom_items: [c] } })).map((c) => c.text);
         const blockedPriceLogs = priceLogProblems(payload, state.finance || {});
         const where = [
-          blocked.length ? `物件 ${blocked.join("、")}` : "",
+          blocked.length ? `物件 ${blocked.map((c) => { const f = blockedFields.filter((x) => x.property_code === c).map((x) => x.label); return f.length ? `${c}（${f.join("、")}）` : c; }).join("、")}` : "",
           blockedNotes.length ? `階段筆記（${blockedNotes.map((n) => `${n.stage_id} ${String(n.at).slice(0, 10)}`).join("、")}）` : "",
           blockedCustom.length ? `自訂題目（${blockedCustom.join("、")}）` : "",
           blockedPriceLogs.length ? `問價紀錄（${blockedPriceLogs.map((p) => `物件 ${p.property_code} ${p.date} ${p.kind}`).join("、")}）` : ""
@@ -1597,6 +1682,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
             : "匯出內容被擋下：含有不能送出的內容",
           hits: prepared.hits,
           blockedProperties: blocked,
+          blockedFields,
           blockedStageNotes: blockedNotes.map((n) => ({ stage_id: n.stage_id, at: n.at })),
           blockedCustomItems: blockedCustom,
           blockedPriceLogs: blockedPriceLogs.map((p) => ({ property_code: p.property_code, date: p.date, kind: p.kind }))
@@ -1752,7 +1838,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       if (isStretchProperty(p, state.finance)) return { ok: false, error: "延伸帶物件不產生上傳包" };
       const gate = prepareOutbound({ recipient: "upload", state, property: p, viewing: v });
       if (!gate.ok) return { ok: false, error: "上傳內容被擋", hits: gate.hits };
-      const picked = state.media.filter((m) => mediaIds.includes(m.id) && m.viewing_id === v.id && m.type === "photo" && m.kind !== "visit_doc");
+      const picked = state.media.filter((m) => mediaIds.includes(m.id) && m.viewing_id === v.id && isUploadablePhoto(m));
       if (picked.length !== mediaIds.length) return { ok: false, error: "只能選這次看房的現場照片" };
       const files = [];
       for (const m of picked) {
@@ -2645,6 +2731,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     load,
     reload,
     addProperty,
+    nextPropertyCode,
     selectViewing,
     currentViewing,
     currentProperty,
@@ -2657,6 +2744,8 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     takePhoto,
     takeVisitPhoto,
     startRecording,
+    addRecMark,
+    recordSyncEvent,
     addAudioChunk,
     stopRecording,
     appendFinalTranscript,

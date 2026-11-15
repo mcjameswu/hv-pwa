@@ -1,4 +1,4 @@
-const CACHE = "house-app-v1.18.0";
+const CACHE = "house-app-v1.19.1";
 const ASSETS = [
   "./",
   "./index.html",
@@ -50,6 +50,8 @@ const ASSETS = [
   "./js/ui-flow.js",
   "./js/coach.js",
   "./js/onboarding.js",
+  "./js/sheet-parse.js",
+  "./js/result-card.js",
   "./js/price-log.js",
   "./js/sites.js"
 ];

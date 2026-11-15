@@ -84,6 +84,7 @@ export function resolveRoute(hash, ctx = {}) {
     const canonical = step ? (station ? `#visit/3/${station}` : `#visit/${step}`) : "#visit";
     return done({ page: "visit", step, station, canonical, redirected: parts.length > 1 && (!step || (parts.length > 2 && !station)) });
   }
+  if (head === "sheet") return done({ page: "sheet", navPage: "visit", canonical: "#sheet", redirected: parts.length > 1 });
   if (head === "property") {
     const sub = parts[1] || null;
     if (sub === "compare") return done({ page: "property", sub: "compare", canonical: "#property/compare" });
@@ -161,6 +162,42 @@ export function rowLabel(r) {
   return id === undefined || id === null ? "" : String(id);
 }
 
+/**
+ * 第 16 輪 F-R16-51（依統籌 11/15 更正）：手機新建物件的自動代號延續筆記正本的 H 編號，格式 H-NNN（三位數補零）。
+ * 規則：取手機上所有 H- 開頭代號的最大數字加 1；沒有任何 H 代號從 H-001 開始；不和現有代號重複；非 H 開頭的舊代號不動也不計入。
+ * 白話：代號只是系統用來分辨的編號，不用人想；要記得是哪一間，靠「記憶備註」。
+ */
+export function nextAutoCode(properties) {
+  const taken = new Set((Array.isArray(properties) ? properties : []).filter((p) => p && typeof p === "object").map((p) => String(p.id)));
+  let max = 0;
+  for (const id of taken) {
+    const m = /^H-(\d+)$/.exec(id);
+    if (!m) continue;
+    const n = toFiniteNumber(m[1]);
+    if (Number.isInteger(n) && n > max) max = n;
+  }
+  let n = max + 1;
+  const code = (k) => `H-${String(k).padStart(3, "0")}`;
+  while (taken.has(code(n))) n += 1;
+  return code(n);
+}
+
+/** 錄音段落一行的文字，例如「03:10 浴室 2」（第 16 輪 F-R16-55）：錄音開始後第幾秒加站名。 */
+export function recMarkText(mark) {
+  const sec = Math.max(0, Math.floor(toFiniteNumber(mark?.sec) ?? 0));
+  const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+  const ss = String(sec % 60).padStart(2, "0");
+  return `${mm}:${ss} ${String(mark?.name ?? "").trim()}`.trim();
+}
+
+/** 記憶備註的第二行小字：太長就截斷（預設 28 個字）。 */
+export function memoryLine(text, max = 28) {
+  const t = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+const idText = (id) => (id === undefined || id === null ? "" : String(id).trim());
+
 /** 物件清單一列要顯示的內容。 */
 export function propertyRows(state) {
   const counted = uniqueCounted(state.viewings, state.properties, state.methodPack);
@@ -175,7 +212,9 @@ export function propertyRows(state) {
       return {
         id: p.id,
         communityName: community,
-        label: community ? `${p.id} ${community}` : String(p.id), // F-R14-15：有案名就顯示「代號 案名」，沒有才只顯示代號
+        memoryNote: typeof p.memory_note === "string" ? p.memory_note.trim() : "",
+        // F-R14-15：有案名就顯示「代號 案名」，沒有才只顯示代號；第 16 輪 F-R16-44：代號也沒有時是最後退路「未命名物件」，不留空白列
+        label: community ? `${p.id} ${community}` : idText(p.id) || "未命名物件",
         area: areaLabel(p.area_code),
         areaCode: p.area_code || "",
         status: propertyStatus(state, p, live),

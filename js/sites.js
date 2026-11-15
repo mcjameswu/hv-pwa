@@ -241,7 +241,7 @@ export function recomputeAggregates(responses, stations) {
       const recs = group.map((s) => out[`${item.id}@${s.key}`]);
       if (recs.every((r) => !responseValue(r).filled)) continue;
       const agg = aggregateInstanceAnswers(recs, item);
-      if (agg) out[item.id] = agg;
+      if (agg) out[item.id] = { ...agg, aggregated: true }; // F-R16-41：標記這是彙整結果，證據函式不再把它餵回去
       else delete out[item.id];
     }
   }

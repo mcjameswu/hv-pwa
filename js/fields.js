@@ -29,7 +29,7 @@ export const NOTES_KEY_ALIASES = { property_code: "id", parking_price: "parking_
 export const NOTES_ROW_KEYS = [
   "property_code", "notes_status", "area_code", "community_name", "ask_total", "ping_total", "has_parking",
   "parking_included_in_ask", "parking_ping", "parking_price", "rooms", "age", "floor_note", "product_type",
-  "mgmt_fee", "agent_company", "branch_label", "agent_alias", "planned_date", "source_note", "notes_ref", "notes_updated_at", "baths"
+  "mgmt_fee", "agent_company", "branch_label", "agent_alias", "planned_date", "source_note", "notes_ref", "notes_updated_at", "memory_note", "baths"
 ];
 
 /** 匯入列的欄位名稱換成物件資料表的欄位名稱。 */
@@ -211,6 +211,8 @@ export const FIELD_TABLES = {
     product_type: spec({ type: "string", nullable: true, privacy: "P1" }),
     prev_ask_total: spec({ type: "amount", exclusiveMin: 0, nullable: true, privacy: "P1" }),
     community_name: spec({ type: "string", nullable: true, privacy: "P1", pii: true }),
+    // 第 16 輪 F-R16-53：記憶備註（幫自己記住這間：在哪個路段、靠近哪裡、第一印象；不要寫門牌號碼）。只記錄，不影響評分指紋
+    memory_note: spec({ type: "string", maxLength: 200, nullable: true, privacy: "P1", pii: true }),
     // 第 12 輪：從筆記匯入的待看物件欄位（只記錄，不影響評分指紋）
     notes_status: spec({ type: "enum", enum: NOTES_STATUSES, nullable: true, privacy: "P1" }),
     floor_note: spec({ type: "string", maxLength: 100, nullable: true, privacy: "P1", pii: true }),

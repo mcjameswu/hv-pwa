@@ -67,9 +67,21 @@ export function aggregateInstanceAnswers(recs, item) {
   if (!recs.length || recs.some((r) => !responseValue(r).filled)) return null;
   const real = recs.filter((r) => !responseValue(r).na);
   if (!real.length) return { status: "不適用", value: "不適用", reason: String(recs.find((r) => r.reason)?.reason || "") };
-  const values = real.map((r) => String(r.value ?? r.status ?? ""));
+  // 第 16 輪 F-R16-48：取每一間的答案和 responseValue 一致，value 去掉空白後是空的就改看 status；純空白不算答案
+  const values = real.map((r) => {
+    const own = typeof r.value === "string" ? r.value.trim() : r.value;
+    const v = own === undefined || own === null || own === "" ? r.status : own;
+    return String(v ?? "").trim();
+  });
   const choices = choiceOptionsOf(item);
-  const isUnknown = (v) => Boolean(choices) && v.trim() !== "" && !WORST_ORDER.includes(v) && !choices.includes(v);
+  // 第 16 輪 F-R16-48：只有選擇題才用嚴重程度排序；有給題目定義而且不是選擇題（文字題、數字題）一律用分號串接，
+  // 避免某一間文字剛好寫「正常」就把另一間的文字丟掉。沒給題目定義（舊呼叫）維持原本的排序行為。
+  if (item && !choices) {
+    const texts = values.filter((v) => v !== "" && v !== "待核");
+    if (!texts.length) return { status: "待核", value: "待核" };
+    return { status: "是", value: texts.join("；") };
+  }
+  const isUnknown = (v) => Boolean(choices) && v !== "" && !WORST_ORDER.includes(v) && !choices.includes(v);
   const unknownValues = values.filter(isUnknown);
   let best = null;
   let bestRank = Infinity;
@@ -81,14 +93,14 @@ export function aggregateInstanceAnswers(recs, item) {
     }
   }
   if (best === null) {
-    const joined = values.filter(Boolean).join("；");
-    return { status: joined ? "是" : "待核", value: joined };
+    const joined = values.filter((v) => v && v !== "待核").join("；");
+    return { status: joined ? "是" : "待核", value: joined || "待核" };
   }
   if (best === "待核" && unknownValues.length) {
     // 看不懂的答案佔了最嚴重的位置：整題待核，保留看不懂的原字串，之後才查得到
     return { status: "待核", value: "待核", raw_value: unknownValues.join("；") };
   }
-  const worstRec = real.find((r) => String(r.value ?? r.status ?? "") === best);
+  const worstRec = real.find((r, i) => values[i] === best);
   return { status: best, value: best, ...(worstRec?.note ? { note: worstRec.note } : {}) };
 }
 
@@ -108,7 +120,9 @@ export function evidenceRecord(responses, itemId, item) {
     .filter((r) => responseValue(r).filled);
   if (!answeredHere.length) return bag[itemId];
   const whole = bag[itemId];
-  const all = responseValue(whole).filled ? [...answeredHere, whole] : answeredHere;
+  // 第 16 輪 F-R16-41：整題那一格如果是 recomputeAggregates 算出來的彙整（有 aggregated 標記），就不要再把它餵回去一起算，
+  // 否則「有；無」這種彙整字串會被當成看不懂而變待核。只有舊版或進階現場頁直接寫的整題答案才一起算。
+  const all = responseValue(whole).filled && !(whole && whole.aggregated === true) ? [...answeredHere, whole] : answeredHere;
   return aggregateInstanceAnswers(all, item) || bag[itemId];
 }
 

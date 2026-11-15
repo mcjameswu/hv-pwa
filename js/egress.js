@@ -245,6 +245,36 @@ export function downloadOutbound(prepared, filename) {
 }
 
 /**
+ * 第 16 輪 F-R16-31：把做好的看房結果卡（PNG 圖）交出去。手機支援分享檔案就開分享選單（使用者自己選 LINE 或雲端硬碟），
+ * 不支援就下載。只接受通過出口閘門的結果卡資料（model.gate.ok）畫出來的圖；App 不代送，沒有任何網路呼叫。
+ */
+export async function deliverResultCard({ blob, filename, gate, forceDownload = false } = {}) {
+  if (!gate || gate.ok !== true || !blob) return { ok: false, error: "結果卡沒有通過出口閘門，不能交出去" };
+  const name = filename || "看房結果卡.png";
+  if (!forceDownload && typeof navigator !== "undefined" && typeof navigator.share === "function" && typeof File === "function") {
+    try {
+      const file = new File([blob], name, { type: "image/png" });
+      if (typeof navigator.canShare !== "function" || navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: name });
+        return { ok: true, method: "share", filename: name };
+      }
+    } catch (err) {
+      if (err && err.name === "AbortError") return { ok: false, cancelled: true, method: "share", filename: name };
+    }
+  }
+  if (typeof document === "undefined") return { ok: true, method: "download", filename: name, skipped: true };
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return { ok: true, method: "download", filename: name };
+}
+
+/**
  * 把已通過出口閘門的「給筆記」檔案交出去（第 12 輪 S3）：手機支援分享檔案就開分享選單（使用者可以選雲端硬碟），
  * 不支援就下載。只接受控制器 buildNotesExport 回傳、而且標記為 approved 的內容；沒有任何網路呼叫。
  * 使用者在分享選單按取消不算失敗，也不會改成偷偷下載。
@@ -305,6 +335,15 @@ export function downloadZipBytes(pack, filename) {
   return { ok: true, filename };
 }
 
+/** 現場照片的 kind 放行名單（F-R16B-05）：沒有 kind 的現場照片，或這裡列出的 kind；其他一律不得進上傳包。 */
+export const FIELD_PHOTO_KINDS = ["field_photo"];
+
+/** 是不是可以進上傳包的現場照片：type 是 photo，而且 kind 是空的或在放行名單裡。 */
+export function isUploadablePhoto(m) {
+  if (!m || typeof m !== "object" || m.type !== "photo") return false;
+  return m.kind === undefined || m.kind === null || m.kind === "" || FIELD_PHOTO_KINDS.includes(m.kind);
+}
+
 /**
  * 上傳包：白名單 manifest.json 與勾選照片，JPEG 先移除 EXIF。
  * 必須收到 gate.ok === true（prepareOutbound 的結果）才產生；清單每個字串值再掃一次私密資料與個資；
@@ -328,7 +367,7 @@ export function buildUploadPackZip({ property, viewing, selectedMedia = [], gate
     if (m.property_id && m.property_id !== propId) {
       return { ok: false, error: "只能選這個物件的現場照片" };
     }
-    if ((m.type && m.type !== "photo") || m.kind === "visit_doc") {
+    if (!isUploadablePhoto(m)) {
       return { ok: false, error: "只能選這次看房的現場照片" };
     }
   }
@@ -418,3 +457,12 @@ export function displayDiffChanges(changes = [], { vaultOpen = false } = {}) {
 }
 
 export { partnerDrafts, systemAgentText };
+
+/** 第 16 輪：結果卡預覽用的本機圖片網址（blob: 網址，只在這支手機的畫面裡用，不外送；放在這裡是因為建立檔案網址只准在出口檔）。 */
+export function createPreviewUrl(blob) {
+  try {
+    return typeof URL !== "undefined" && typeof URL.createObjectURL === "function" ? URL.createObjectURL(blob) : "";
+  } catch {
+    return "";
+  }
+}

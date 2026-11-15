@@ -59,6 +59,7 @@ export function blankPropertyFields() {
     product_type: null,
     prev_ask_total: null,
     community_name: "",
+    memory_note: "",
     baths: null
   };
 }

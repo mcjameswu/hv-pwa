@@ -7,7 +7,8 @@ import { UNKNOWN_FILE_MESSAGE, prefillHint } from "./js/notes-import.js";
 import { scoreProperty, priceDropToCapReminder, propertiesForAgentDraft, isStretchProperty, assessPropertyFromState, latestAnswerClearsVeto, orderedViewings, mergedEvidenceFor } from "./js/scoring.js";
 import { runAffordability, DOWN_PENDING } from "./js/affordability.js";
 import { scanDraft, whitelistUploadPack } from "./js/scanner.js";
-import { prepareOutbound, writeClipboard, downloadOutbound, displayDiffChanges, downloadBackupJson, downloadZipBytes, deliverNotesFile, systemPartnerText } from "./js/egress.js";
+import { prepareOutbound, isUploadablePhoto, writeClipboard, downloadOutbound, displayDiffChanges, downloadBackupJson, downloadZipBytes, deliverNotesFile, deliverResultCard, createPreviewUrl, systemPartnerText } from "./js/egress.js";
+import { buildResultCardModel, drawResultCard, resultCardFileName } from "./js/result-card.js";
 import { parseHM, formatHM } from "./js/slots.js";
 import { countViewing, uniqueCounted, w3OnsiteAudit, sameDaySoftWarning, responseValue } from "./js/counting.js";
 import { w3Judge, w6Judge, w10Judge, w0PlanStartAllowed, minutesSplit, checkpointLabel, adoptedHalfDayHours, w3FullJudge, w6FullJudge, retroWriteVeto } from "./js/checkpoints.js";
@@ -53,13 +54,15 @@ import { applyGatedThresholdChange } from "./js/validate.js";
 import { createController } from "./js/controller.js";
 import { displayItem, packChecklist } from "./js/items-for-viewing.js";
 import { propertyStatus } from "./js/notes-export.js";
-import { onboardingModel, TRIAL_ROUTE } from "./js/onboarding.js";
+import { onboardingModel, TRIAL_ROUTE, IN_APP_NOTICE } from "./js/onboarding.js";
 import {
   resolveRoute,
   VISIT_STEPS,
   homeModel,
   propertyRows,
   rowLabel,
+  memoryLine,
+  recMarkText,
   phaseProgress,
   groupByCategory,
   resultSummary,
@@ -72,6 +75,7 @@ import { financeTrust } from "./js/finance-trust.js";
 import { stagesInfo, normalizeCoach, currentStageOf, nextStepOf, stageProgress, parseLink, stepsForVisitStep, localDate, stageMinutes, visitStepMinutes, timerView } from "./js/coach.js";
 import { routeStations, resolveStations, stationIndexForItem, stationItems, stationImpact, responseKeyOf, answered, optionsOf, isProblemValue, missingItems, missingLine, prefillOrigins, prefillFor, unassignedOnsite, CATCH_ALL_KEY } from "./js/sites.js";
 import { priceLogFor, priceLogLine, PRICE_LOG_KINDS } from "./js/price-log.js";
+import { parseSheetInput, buildSheetPrompt, pickSheetFields, SHEET_FIELDS, SCORE_FIELDS, ASK_QUESTIONS } from "./js/sheet-parse.js";
 
 const $ = (sel) => document.querySelector(sel);
 const appEl = $("#app");
@@ -96,12 +100,25 @@ const ui = {
   timer: null, // 階段頁的計時器 { key, startedAt }（只在本機計時，不連網）
   timerHandle: null,
   stationMsg: "", // 「這站都正常」之後要顯示的一句話
+  installWaited: false, // 載入 5 秒後（F-R16-12）
+  installTimer: null,
   installEvent: null, // 瀏覽器送來的「可以安裝」事件（beforeinstallprompt）；沒有就只顯示文字做法
   coachArrival: null, // 按首頁「照著做」進階段頁時，要展開「怎麼做」的步驟代號（只用一次）
   focusAfterRender: null, // 換頁後要把游標放到哪個輸入框（首頁紅色提示用）
   lastHash: null, // 上一次畫的網址：網址換了（換頁或換步驟）就把畫面捲回最上面
   scrollTop: false, // 同一個網址但內容整個換掉（例如存檔後出現結果卡）時，要求捲回最上面
   tabNotice: "",
+  sheet: null, // 現場新增（拍帶看單）的草稿：照片、貼上的文字、預覽欄位（只在這次開著的畫面裡，建立之後才進資料庫）
+  field: null, // 看房中工具列這一頁的對象：{ viewingId, stationKey, stationName }
+  stationNow: null, // 這一頁如果是現場的某一站：{ viewingId, key, name }
+  recConsentFor: null, // 錄音前「已告知在場的人」確認過的看房代號（這次看房記住，不再問）
+  recStartedAt: 0,
+  recMarkLast: null,
+  recTick: null,
+  tbAsk: false,
+  tbMsg: "",
+  tbTimer: null,
+  updateWorker: null, // 已經下載好、在等待的新版 service worker（有值就常駐「有新版本」橫幅）
   _recStopExpected: false
 };
 let pendingBackupFiles = null;
@@ -255,20 +272,17 @@ async function boot() {
       if (navigator.serviceWorker.controller) {
         navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
       }
-      reg.addEventListener("updatefound", () => {
+      // 第 16 輪 F-R16-46：新版已經下載好在等待（上次打開時下載、沒按更新）而且這個頁面還是舊版控制的，
+      // 一註冊完就顯示同一個更新橫幅，不能只靠 updatefound 事件（那個事件只在剛下載好的那一刻才會來）
+      const showUpdateBanner = (worker) => {
+        ui.updateWorker = { reg, worker };
+        showBanner();
+      };
+      if (reg?.waiting && navigator.serviceWorker.controller) showUpdateBanner(reg.waiting);
+      reg?.addEventListener?.("updatefound", () => {
         const nw = reg.installing;
         nw?.addEventListener("statechange", () => {
-          if (nw.state === "installed" && navigator.serviceWorker.controller) {
-            const btn = el("button", { type: "button", text: "更新並重新載入" });
-            btn.onclick = () => {
-              nw.postMessage("skipWaiting");
-              if (reg.waiting) reg.waiting.postMessage("skipWaiting");
-            };
-            bannerEl.className = "banner";
-            bannerEl.textContent = "有新版本。";
-            bannerEl.appendChild(btn);
-            bannerEl.classList.remove("hidden");
-          }
+          if (nw.state === "installed" && navigator.serviceWorker.controller) showUpdateBanner(nw);
         });
       });
     }).catch(() => {});
@@ -317,6 +331,17 @@ async function boot() {
   });
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("hashchange", render);
+  // 第 16 輪 F-R16-12：頁面載入 5 秒後還沒收到安裝事件，上手卡第 1 步就多一行「可能在別的 App 裡打開」的提醒
+  ui.installTimer = setTimeout(() => {
+    ui.installTimer = null;
+    if (typeof document === "undefined" || !document.body?.contains?.(appEl)) return; // 頁面已經不在了（測試結束或離開）
+    const before = onboardingNow().inAppNotice;
+    ui.installWaited = true;
+    const h = location.hash || "#home";
+    // 提醒真的會新出現才重畫，避免平白打斷正在做的事
+    if ((h === "#home" || h === "#more/start") && onboardingNow().inAppNotice !== before) render();
+  }, 5000);
+  ui.installTimer.unref?.();
   render();
 }
 
@@ -384,7 +409,18 @@ function showBanner() {
     }
     bannerEl.appendChild(row);
   }
-  bannerEl.classList.toggle("hidden", model.hidden);
+  // 第 16 輪 F-R16-46：新版已下載好在等待時，更新橫幅要常駐（每次重繪都留著），不然換頁就消失
+  if (ui.updateWorker) {
+    const { reg, worker } = ui.updateWorker;
+    const btn = el("button", { type: "button", id: "updateBtn", text: "更新並重新載入" });
+    btn.onclick = () => {
+      const target = reg?.waiting || worker;
+      target?.postMessage?.("skipWaiting");
+      if (worker && worker !== target) worker.postMessage?.("skipWaiting");
+    };
+    bannerEl.appendChild(el("span", { class: "banner-item", id: "updateNotice" }, ["有新版本。 ", btn]));
+  }
+  bannerEl.classList.toggle("hidden", model.hidden && !ui.updateWorker);
 }
 
 function currentRoute() {
@@ -435,6 +471,7 @@ function render() {
     home: pageHome,
     visit: () => pageVisit(route),
     property: () => pageProperty(route),
+    sheet: pageSheet,
     more: () => pageMoreRoute(route),
     coach: () => pageCoach(route),
     price_log: () => pagePriceLog(route)
@@ -454,8 +491,10 @@ function render() {
     clearInterval(ui.timerHandle);
     ui.timerHandle = null;
   }
+  ui.stationNow = null; // 站頁（visitStationPage）會重新填
   (map[page] || pageHome)();
   annotateGlossary();
+  syncFieldBar(route);
   document.body?.classList.toggle("has-stepbar", Boolean($("#stepbar")));
   if (ui.focusAfterRender) {
     const target = document.getElementById(ui.focusAfterRender);
@@ -592,7 +631,13 @@ function isStandaloneNow() {
 }
 
 function onboardingNow() {
-  return onboardingModel(state, { standalone: isStandaloneNow(), canInstall: Boolean(ui.installEvent) });
+  let userAgent = "";
+  try {
+    userAgent = typeof navigator !== "undefined" && typeof navigator.userAgent === "string" ? navigator.userAgent : "";
+  } catch {
+    userAgent = ""; // 讀不到就當沒有，不得出錯
+  }
+  return onboardingModel(state, { standalone: isStandaloneNow(), canInstall: Boolean(ui.installEvent), userAgent, installWaited: ui.installWaited });
 }
 
 async function setOnboarding(flag, value = true) {
@@ -617,6 +662,21 @@ function onboardingSteps(m, { full }) {
     if (!st.done) {
       const btns = [];
       if (open) kids.push(el("p", { class: "hint onb-how", text: st.how }));
+      if (st.id === "pwa" && m.inAppNotice && open) {
+        const copy = el("button", { type: "button", id: "copyUrl", text: "複製網址" });
+        const copyMsg = el("span", { class: "hint", id: "copyUrlMsg" });
+        copy.onclick = async () => {
+          let ok = false;
+          try {
+            const r = await writeClipboard({ ok: true, text: location.href || `${location.origin}/` });
+            ok = r.ok && !r.skipped;
+          } catch {
+            ok = false;
+          }
+          copyMsg.textContent = ok ? "已複製網址，貼到 Chrome 的網址列就能打開。" : "這個畫面不讓 App 直接複製，請長按網址列自己複製。";
+        };
+        kids.push(el("p", { class: "review-banner", id: "inAppNotice", text: IN_APP_NOTICE }), el("div", { class: "row" }, [copy, copyMsg]));
+      }
       if (st.id === "pwa") {
         if (m.canInstall) {
           const b = el("button", { type: "button", class: "primary", id: "onbInstall", text: "安裝到主畫面" });
@@ -642,6 +702,12 @@ function onboardingSteps(m, { full }) {
           location.hash = "#more/import";
         };
         btns.push(go);
+        if (st.id === "import") {
+          // 第 16 輪 F-R16-45：沒有區域功課也能往下走
+          const skip = el("button", { type: "button", id: "onbImportSkip", text: "先不匯入區域,之後再補" });
+          skip.onclick = () => setOnboarding("import_skipped");
+          btns.push(skip);
+        }
         if (st.id === "pack") {
           const builtin = el("button", { type: "button", id: "onbBuiltin", text: "先用內建通用版" });
           builtin.onclick = () => setOnboarding("builtin_pack");
@@ -669,7 +735,8 @@ function onboardingSteps(m, { full }) {
         kids.push(el("details", { class: "fold", id: "onbTrial", open: true }, [el("summary", { text: "試走路線" }), el("ol", { class: "onb-route" }, TRIAL_ROUTE.map((t) => el("li", { text: t })))]));
       }
     }
-    return el("div", { class: `onb-step ${stateName}${st.current ? "" : " dim"}`, "data-onb": st.id, "data-state": stateName }, kids);
+    // 第 16 輪 F-R16-43：已完成的不變淡（打勾），目前這步標亮，還沒到的才變淡
+    return el("div", { class: `onb-step ${stateName}${st.done || st.current ? "" : " dim"}`, "data-onb": st.id, "data-state": stateName }, kids);
   });
 }
 
@@ -717,6 +784,7 @@ function pageHome() {
   const pendingRows = model.pending.map((r) => {
     const b = el("button", { type: "button", class: "prop-row", "data-property": r.id }, [
       el("strong", { text: rowLabel(r) }),
+      r.memoryNote ? el("span", { class: "meta memo", text: memoryLine(r.memoryNote) }) : null,
       el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") })
     ]);
     b.onclick = () => beginViewing(r.id);
@@ -726,6 +794,7 @@ function pageHome() {
   const onb = onboardingNow();
   // 上手卡還在的時候，「可承受上限還沒填」紅卡不同時出現（上手卡第 4 步已經有按鈕）；上手卡收起後紅卡規則照舊
   mount(appEl, [
+    liveViewingCard(),
     onb.visibleOnHome ? onboardingCard(onb) : null,
     blank && !onb.visibleOnHome ? el("button", { type: "button", id: "capAlert", class: "alert-link", text: "可承受上限還沒填：點這裡直接去填（只有你自己看得到）" }) : null,
     // 口袋大叔：你現在在第幾階段、下一步做什麼、這間還要大約幾分鐘；R12 的三個大按鈕保留在下方
@@ -750,6 +819,7 @@ function pageHome() {
       el("h2", { text: "今天要做什麼" }),
       el("button", { type: "button", class: "big-btn", id: "homeImport", text: model.importLabel }),
       el("button", { type: "button", class: coach ? "big-btn" : "big-btn primary", id: "homeVisit", text: model.visitLabel }), // 有教練卡時，「照著做」是首頁唯一的主要按鈕
+      sheetEntryButton("sheetEntryHome"),
       el("button", { type: "button", class: "big-btn", id: "homeExport", text: model.exportLabel }),
       exportMsg
     ]),
@@ -765,6 +835,7 @@ function pageHome() {
       el("p", { text: "App 不送出任何訊息、出價或付款。草稿請你自己複製去送。" }),
       el("p", { text: "唯一對外連線：你手動打開的線上即時轉文字。" })
     ]),
+    onb.visibleOnHome && !onb.allDone ? null : syncCard(),
     el("div", { class: "card", id: "vaultCard" }, [
       el("h2", { text: "私密區" }),
       el("p", {}, [
@@ -851,6 +922,45 @@ function pageVisit(route) {
   built.after?.();
 }
 
+/**
+ * 第 16 輪 F-R16-51、F-R16-52、F-R16-53：新增一間物件的卡（看一間第 1 步與物件分頁共用）。
+ * 白話：代號由 App 自動給（H-NNN，延續筆記的 H 編號），不用人想；真正要填的只有一格「記憶備註」，也可以空白；
+ * 區域用下拉選單，選「還不知道,之後補」就先不填，計分會照既有規則顯示資料不足。
+ */
+function addPropertyCard({ onAdded } = {}) {
+  const suggested = ctrl.nextPropertyCode();
+  const areas = (state.areas || []).filter((a) => a && a.area_code);
+  const areaSel = el("select", { id: "vArea" }, [
+    el("option", { value: "", text: "還不知道,之後補" }),
+    ...areas.map((a) => el("option", { value: a.area_code, text: `${a.area_code} ${a.area_label || ""}`.trim() }))
+  ]);
+  const memo = el("input", { id: "vMemo", maxlength: "200", placeholder: "寫一句幫你記住這間:在哪個路段、靠近哪裡、第一印象。不要寫門牌號碼" });
+  const codeInput = el("input", { id: "vCode", value: suggested });
+  const add = el("button", { type: "button", id: "vAdd", text: "新增到待看清單" });
+  add.onclick = async () => {
+    let id = (codeInput.value || "").trim();
+    if (!id || id === suggested) id = ctrl.nextPropertyCode();
+    const fields = { id, area_code: areaSel.value || null };
+    const note = (memo.value || "").trim();
+    if (note) fields.memory_note = note;
+    const r = await runCommand(() => ctrl.addProperty(fields, { withViewing: false }));
+    if (!r?.ok) return;
+    onAdded?.(id);
+  };
+  return el("details", { class: "fold", id: "addFold" }, [
+    el("summary", { text: "新增一間（只要寫一句幫你記住的備註）" }),
+    el("label", { text: "記憶備註（選填）" }, [memo]),
+    el("label", { text: "區域" }, [areaSel]),
+    areas.length ? null : el("p", { class: "hint", id: "noAreaHint", text: "先從筆記匯入區域功課，這裡才有區域可以選。" }),
+    el("details", { class: "fold", id: "advCode" }, [
+      el("summary", { text: "進階:改代號" }),
+      el("label", { text: "物件代號（App 已經自動給了，可改但不用改，不要寫門牌）" }, [codeInput])
+    ]),
+    add,
+    el("p", { class: "hint", text: "其他資料之後在「物件」頁補，或現場再填。" })
+  ]);
+}
+
 function visitSelectStep() {
   const rows = propertyRows(state);
   const isWaiting = (r) => r.status === "待看" || r.status === "已約";
@@ -861,6 +971,7 @@ function visitSelectStep() {
   const rowNode = (r) => {
     const b = el("button", { type: "button", class: `prop-row${ui.visit.selectedId === r.id ? " on" : ""}`, "data-property": r.id }, [
       el("strong", { text: rowLabel(r) }),
+      r.memoryNote ? el("span", { class: "meta memo", text: memoryLine(r.memoryNote) }) : null,
       el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") })
     ]);
     b.onclick = () => {
@@ -870,19 +981,19 @@ function visitSelectStep() {
     };
     return b;
   };
-  const addCard = el("details", { class: "fold", id: "addFold" }, [
-    el("summary", { text: "新增一間（只要物件代號與區域代號）" }),
-    input("vCode", "物件代號", { placeholder: "例如 A01，不要寫門牌" }),
-    input("vArea", "區域代號", { placeholder: "AA01" }),
-    el("button", { type: "button", id: "vAdd", text: "新增到待看清單" }),
-    el("p", { class: "hint", text: "其他資料之後在「物件」頁補，或現場再填。" })
-  ]);
+  const addCard = addPropertyCard({
+    onAdded: (id) => {
+      ui.visit.selectedId = id;
+      render();
+    }
+  });
   const nodes = [
     el("div", { class: "card" }, [
       el("h2", { text: "選一間要看的物件" }),
       open
         ? el("p", {}, [`進行中的看房：${open.property_id}　`, el("button", { type: "button", id: "resumeViewing", text: `繼續看 ${open.property_id}` })])
         : null,
+      sheetEntryButton("sheetEntryVisit"),
       ...(waiting.length ? waiting.map(rowNode) : [el("p", { class: "hint", text: "還沒有待看物件。可以先從筆記匯入，或在下面新增一間。" })])
     ]),
     others.length
@@ -901,18 +1012,6 @@ function visitSelectStep() {
       $("#resumeViewing")?.addEventListener("click", () => {
         location.hash = "#visit/2";
       });
-      $("#vAdd").onclick = async () => {
-        const id = ($("#vCode").value || "").trim();
-        const area = ($("#vArea").value || "").trim();
-        if (!id || !area) {
-          showError("請填物件代號與區域代號");
-          return;
-        }
-        const r = await runCommand(() => ctrl.addProperty({ id, area_code: area }, { withViewing: false }));
-        if (!r?.ok) return;
-        ui.visit.selectedId = id;
-        render();
-      };
     }
   };
 }
@@ -1060,9 +1159,9 @@ function visitPrepStep(cur) {
 }
 
 /** 掛上拍照、錄音與線上轉文字的按鈕（現場頁與看房第 3 步共用）。viewingId 是這個畫面顯示的那一間看房。 */
-function wirePhotoAndRecording(viewingId) {
-  wirePhoto(viewingId);
-  $("#recBtn").onclick = toggleRec;
+function wirePhotoAndRecording() {
+  // 拍照改由看房中工具列負責（F-R16-54）；這裡只接錄音區與轉文字
+  $("#recBtn").onclick = requestRec;
   $("#sttBtn").onclick = startStt;
   $("#sttStop").onclick = () => stopStt();
   // 取消勾選「已告知在場的人並取得同意」就停止轉文字（F9-09）
@@ -1251,8 +1350,6 @@ function visitOnsiteStep(cur, route = {}) {
           })()
         ]
       : []),
-    el("button", { type: "button", class: "fab", id: "photoBtn", text: "拍照" }),
-    el("input", { id: "photoFile", type: "file", accept: "image/*", capture: "environment", class: "hidden" })
   ];
   // 防漏清單（E5）：現場必做題還有沒答的，按「下一步」先跳出「還漏這幾項」
   const confirming = !routed && onsiteMissing.length > 0;
@@ -1265,7 +1362,7 @@ function visitOnsiteStep(cur, route = {}) {
     after() {
       drawParking();
       drawCondition();
-      wirePhotoAndRecording(cur.id);
+      wirePhotoAndRecording();
       if (confirming) wireSkipConfirm(cur, "現場", "#visit/4");
       $("#stepBack")?.addEventListener("click", () => {
         location.hash = "#visit/2";
@@ -1296,11 +1393,15 @@ function visitResultStep(cur) {
       el("p", { text: `目前共計入 ${sum.countedTotal} 間` }),
       el("h3", { text: "下一步建議" }),
       el("ul", { id: "resultNext" }, sum.next.map((t) => el("li", { text: t }))),
-      el("button", { type: "button", class: "big-btn", id: "resultExport", text: "匯出到筆記" }),
+      el("p", { class: "hint", id: "resultSyncReminder", text: "記得匯出給電腦整理，筆記與安家才會更新。" }),
+      el("button", { type: "button", class: "big-btn", id: "resultExport", text: "匯出給電腦整理" }),
+      isStretchProperty(state.properties.find((p) => p.id === cur.property_id) || {}, state.finance) ? null : el("button", { type: "button", class: "big-btn", id: "makeCard", text: "做成結果卡" }),
+      el("div", { id: "cardBox" }),
       coachAfterViewingLink() ? el("button", { type: "button", class: "big-btn", id: "resultCoach", text: "回口袋大叔(看房後要做的事)" }) : null,
       el("button", { type: "button", class: "big-btn", id: "resultEdit", text: "回去改答案" }),
       msg
-    ])
+    ]),
+    recMarksCard(cur)
   ];
   return {
     nodes,
@@ -1309,7 +1410,10 @@ function visitResultStep(cur) {
       $("#resultExport").onclick = async () => {
         const r = await exportToNotes();
         msg.textContent = r.message;
+        refreshState();
       };
+      const makeCard = $("#makeCard");
+      if (makeCard) makeCard.onclick = () => showResultCard(cur.property_id, msg);
       $("#resultCoach")?.addEventListener("click", () => {
         const target = coachAfterViewingLink();
         if (!target) return;
@@ -1331,9 +1435,22 @@ function visitResultStep(cur) {
   };
 }
 
+/** 看房後頁的「錄音段落」：錄音中換站記下的標記（例如「03:10 浴室 2」），方便之後回聽或轉文字時找到那一段。沒有標記就不顯示。 */
+function recMarksCard(cur) {
+  const marks = Array.isArray(cur?.rec_marks) ? cur.rec_marks : [];
+  if (!marks.length) return null;
+  return el("div", { class: "card", id: "recMarks" }, [
+    el("h3", { text: "錄音段落" }),
+    el("ul", {}, marks.map((m) => el("li", { text: recMarkText(m) }))),
+    el("p", { class: "hint", text: "只記錄錄音開始後第幾秒換到哪一站，音檔還在這支手機裡。" })
+  ]);
+}
+
 function visitPostStep(cur) {
   if (isFlagOn(cur.post_saved) && ui.visit.resultFor === cur.id && !ui.visit.editPost) return visitResultStep(cur);
   const { nodes } = visitPhaseNodes(cur, "看房後", "看房後");
+  const marksCard = recMarksCard(cur);
+  if (marksCard) nodes.push(marksCard);
   const save = el("button", { type: "button", class: "primary", id: "savePost", text: "存檔並評分" });
   // 防漏清單（E5）：存檔之前，一定要再列一次整間（看房前、現場、看房後）還漏了哪些
   const missingAll = ui.visit.confirmSave ? computeMissing(cur, "all") : [];
@@ -1652,6 +1769,12 @@ function renderImportTablePreview(preview, data, hash) {
       return;
     }
     ui.notesChoices = {};
+    try {
+      await ctrl.recordSyncEvent("import", { name: lastImportFiles?.[0]?.name || "" });
+    } catch {
+      /* 同步時間記不下來不影響匯入結果與畫面（F-R16B-16） */
+    }
+    refreshState();
     // 匯入已經完成：第一句從「會…」改成「已…」，要「下面逐項改選」那句已不能做了就不再顯示
     const doneLines = (report.plainSummary || []).filter((t, i) => i === 0 || !/逐項改選/.test(t)).map((t, i) => (i === 0 ? t.replace(/^會/, "已") : t));
     mount(preview, [
@@ -1900,7 +2023,7 @@ function pageField() {
     const r = await ctrl.takePhoto({ blob: f, name: f.name, viewingId: ui.fieldViewingId });
     if (!r.ok) showError(r.error);
   };
-  $("#recBtn").onclick = toggleRec;
+  $("#recBtn").onclick = requestRec;
   $("#sttBtn").onclick = startStt;
   $("#sttStop").onclick = () => stopStt();
   // 取消勾選「已告知在場的人並取得同意」就停止轉文字（F9-09）
@@ -1916,6 +2039,257 @@ function propertyTabs(active) {
   ]);
 }
 
+// ---------------------------------------------------------------------------
+// 第 16 輪 F-R16-01 到 F-R16-05：現場新增（拍帶看單）、貼上文字或 AI 結果自動拆欄位、預覽、單子上沒有
+// ---------------------------------------------------------------------------
+
+const SHEET_INPUT_IDS = {
+  ask_total: "pask", ping_total: "pping", rooms: "prooms", baths: "pbaths", area_code: "parea", product_type: "ptype", has_parking: "phaspark",
+  age: "page", floor_note: "pfloor", mgmt_fee_yuan: "pmgmt", parking_ping: "pparkping", parking_price_ask: "ppark", parking_included_in_ask: "pparkin"
+};
+
+function freshSheet() {
+  return { photo: null, text: "", parsed: null, values: {}, sources: {}, asks: [], filling: [], memo: "", code: "" };
+}
+
+function sheetValueOf(key) {
+  const v = ui.sheet.values[key];
+  return v === undefined || v === null ? "" : String(v);
+}
+
+function sheetSetValue(key, value, source) {
+  const t = typeof value === "string" ? value.trim() : value;
+  if (t === "" || t === undefined || t === null) {
+    delete ui.sheet.values[key];
+    delete ui.sheet.sources[key];
+  } else {
+    ui.sheet.values[key] = t;
+    ui.sheet.sources[key] = source;
+  }
+}
+
+/** 預覽裡一個欄位用哪種輸入元件：選單或文字框。 */
+function sheetInput(key, id) {
+  const cur = sheetValueOf(key);
+  const flag = (v) => (v === true || v === "true" || v === "有" || v === "是" ? "有" : v === false || v === "false" || v === "無" || v === "否" ? "無" : "");
+  if (key === "area_code") {
+    return el("select", { id }, [
+      el("option", { value: "", text: "還不知道,之後補" }),
+      ...(state.areas || []).filter((a) => a && a.area_code).map((a) => el("option", { value: a.area_code, text: `${a.area_code} ${a.area_label || ""}`.trim(), selected: a.area_code === cur }))
+    ]);
+  }
+  if (key === "has_parking" || key === "parking_included_in_ask") {
+    const words = key === "has_parking" ? ["有", "無"] : ["是", "否"];
+    const curWord = flag(cur) === "有" ? words[0] : flag(cur) === "無" ? words[1] : "";
+    return el("select", { id }, [el("option", { value: "", text: "未填" }), ...words.map((w) => el("option", { value: w, text: w, selected: w === curWord }))]);
+  }
+  if (key === "product_type") {
+    return el("select", { id }, [el("option", { value: "", text: "未填" }), ...["大樓", "華廈", "公寓", "透天"].map((w) => el("option", { value: w, text: w, selected: w === cur }))]);
+  }
+  return el("input", { id, value: cur, inputmode: ["community_name", "floor_note", "agent_company", "branch_label", "agent_alias"].includes(key) ? undefined : "decimal" });
+}
+
+function sheetRawToField(key, raw) {
+  if (key === "has_parking") return raw === "有" || raw === true ? true : raw === "無" || raw === false ? false : null;
+  if (key === "parking_included_in_ask") return raw === "是" || raw === true ? true : raw === "否" || raw === false ? false : null;
+  return raw;
+}
+
+function pageSheet() {
+  if (!ui.sheet) ui.sheet = freshSheet();
+  const sh = ui.sheet;
+  const areas = (state.areas || []).filter((a) => a && a.area_code);
+  const msg = el("p", { class: "hint", id: "sheetMsg" });
+  const photoText = (f) => `已選好 1 張帶看單照片（${f.name || "照片"}）；建立這間時才存進手機，不會出現在任何匯出或分享。`;
+  const photoState = el("p", { class: "hint", id: "sheetPhotoState", text: sh.photo ? photoText(sh.photo) : "還沒拍。可以跳過，直接貼文字。" });
+  const shoot = el("button", { type: "button", id: "sheetShoot", text: "拍帶看單" });
+  const file = el("input", { id: "sheetFile", type: "file", accept: "image/*", capture: "environment", class: "hidden" });
+  shoot.onclick = () => file.click();
+  file.onchange = (ev) => {
+    const f = ev.target.files[0];
+    if (!f) return;
+    sh.photo = f;
+    photoState.textContent = photoText(f);
+  };
+  const text = el("textarea", { id: "sheetText", rows: "6", placeholder: "貼上文字辨識複製出來的文字，或 AI 回給你的 JSON" });
+  text.value = sh.text || "";
+  text.oninput = () => {
+    sh.text = text.value;
+  };
+  const promptBtn = el("button", { type: "button", id: "sheetPrompt", text: "複製給 AI 的提示詞" });
+  promptBtn.onclick = async () => {
+    try {
+      // 提示詞是固定的通用文字，仍然過一次出口閘門再交給剪貼簿（剪貼簿只准走 egress.js）
+      const prepared = prepareOutbound({ recipient: "agent", userText: buildSheetPrompt(), state });
+      const done = await writeClipboard(prepared);
+      if (!done.ok || done.skipped) throw new Error("clipboard");
+      msg.textContent = "已複製提示詞。把它和帶看單照片一起貼給你的 AI，再把它回的結果貼回下面的框。";
+    } catch {
+      sh.showPrompt = true;
+      render();
+    }
+  };
+  const readBtn = el("button", { type: "button", class: "primary", id: "sheetRead", text: "讀取內容" });
+  readBtn.onclick = () => {
+    sh.text = text.value;
+    if (!sh.text.trim()) {
+      msg.textContent = "還沒有內容可以讀。先貼上文字或 AI 的結果。";
+      return;
+    }
+    const out = parseSheetInput(sh.text, { areas, now: Date.now() });
+    sh.parsed = out;
+    sh.values = { ...out.fields };
+    sh.sources = { ...out.sources };
+    sh.asks = [];
+    sh.filling = [];
+    render();
+  };
+  const parsed = sh.parsed;
+  const nodes = [
+    backLink("#visit/1", "← 回選物件"),
+    el("div", { class: "card", id: "sheetPage" }, [
+      el("h2", { text: "現場新增（拍帶看單）" }),
+      el("p", { class: "hint", id: "sheetHow", text: "App 不連網，不在這裡讀圖。拍好照片後，用手機相機或相簿的文字辨識，選複製文字，再貼到下面；或用下面的提示詞請你的 AI 讀照片。" }),
+      el("div", { class: "row" }, [shoot]),
+      photoState,
+      file,
+      text,
+      el("div", { class: "row" }, [promptBtn, readBtn]),
+      sh.showPrompt ? el("pre", { id: "sheetPromptText", text: buildSheetPrompt() }) : null,
+      msg
+    ])
+  ];
+  if (parsed) {
+    const rowFor = (f) => {
+      const id = `sf-${f.key}`;
+      const inp = sheetInput(f.key, id);
+      const src = el("span", { class: "tag src", "data-src": f.key, text: sh.sources[f.key] || "你填的" });
+      inp.onchange = () => {
+        sheetSetValue(f.key, inp.value, "你填的");
+        src.textContent = sh.sources[f.key] || "";
+        if (SCORE_FIELDS.includes(f.key)) render();
+      };
+      return el("div", { class: "sheet-row", "data-field": f.key }, [el("label", { text: `${f.label}${f.unit ? `（${f.unit}）` : ""}`, for: id }, [inp]), src]);
+    };
+    const have = SHEET_FIELDS.filter((f) => sh.values[f.key] !== undefined && sh.values[f.key] !== "");
+    const missingKeys = SCORE_FIELDS.filter((k) => sh.values[k] === undefined || sh.values[k] === "");
+    const memo = el("input", { id: "sheetMemo", maxlength: "200", placeholder: "寫一句幫你記住這間:在哪個路段、靠近哪裡、第一印象。不要寫門牌號碼" });
+    memo.value = sh.memo || "";
+    memo.onchange = () => {
+      sh.memo = memo.value;
+    };
+    memo.oninput = () => {
+      sh.memo = memo.value; // 邊打邊存，重畫後不會被重置（F-R16B-11）
+    };
+    const guessed = Object.entries(sh.sources).filter(([, s]) => /猜/.test(s)).map(([k]) => SHEET_FIELDS.find((f) => f.key === k)?.label || k);
+    nodes.push(
+      el("div", { class: "card", id: "sheetPreview" }, [
+        el("h2", { text: "確認這間的資料" }),
+        el("p", { class: "hint", id: "sheetAddrNote", text: `地址不存進 App，電腦整理時會在筆記標待補。${parsed.dropped?.length ? `（已丟掉 ${parsed.dropped.length} 行地址或聯絡方式）` : ""}` }),
+        guessed.length ? el("p", { class: "review-banner", id: "sheetGuess", text: `這些是猜的，請確認：${guessed.join("、")}` }) : null,
+        ...(parsed.droppedFields || []).map((k) => el("p", { class: "hint warn", "data-addr-dropped": k, text: `「${SHEET_FIELDS.find((f) => f.key === k)?.label || k}」這一欄看起來是地址,地址不存進 App。` })),
+        ...(parsed.invalid || []).map((i) => el("p", { class: "hint warn", "data-invalid": i.field, text: `「${SHEET_FIELDS.find((f) => f.key === i.field)?.label || i.field}」不合規格（${i.message}），沒有寫入，請自己填。` })),
+        ...(parsed.notes || []).map((n) => el("p", { class: "hint", text: n })),
+        el("label", { text: "記憶備註（選填）" }, [memo]),
+        ...(have.length ? have.map(rowFor) : [el("p", { class: "hint", text: "沒有讀到可以用的欄位，下面可以自己填。" })])
+      ])
+    );
+    nodes.push(
+      el("div", { class: "card", id: "sheetMissing" }, [
+        el("h2", { text: "單子上沒有" }),
+        missingKeys.length ? el("p", { class: "hint", text: "這幾項計分會用到：自己填，或列成要問仲介的問題。" }) : el("p", { class: "hint", text: "計分需要的欄位都有了。" }),
+        ...missingKeys.map((k) => {
+          const f = SHEET_FIELDS.find((x) => x.key === k);
+          const asked = sh.asks.includes(k);
+          const fill = el("button", { type: "button", "data-fill": k, text: "我來填" });
+          fill.onclick = () => {
+            if (!sh.filling.includes(k)) sh.filling.push(k);
+            render();
+          };
+          const ask = el("button", { type: "button", "data-ask": k, class: asked ? "on" : "", text: asked ? "已加進要問仲介" : "要問仲介" });
+          ask.onclick = () => {
+            sh.asks = asked ? sh.asks.filter((x) => x !== k) : [...sh.asks, k];
+            render();
+          };
+          const inp = sh.filling.includes(k) ? sheetInput(k, `sm-${k}`) : null;
+          if (inp) {
+            inp.onchange = () => {
+              sheetSetValue(k, inp.value, "你填的");
+              sh.asks = sh.asks.filter((x) => x !== k);
+              render();
+            };
+          }
+          return el("div", { class: "sheet-missing-row", "data-missing": k }, [
+            el("strong", { text: `${f?.label || k}${f?.unit ? `（${f.unit}）` : ""}` }),
+            inp,
+            el("div", { class: "row" }, [fill, ask]),
+            asked ? el("p", { class: "hint", "data-question": k, text: ASK_QUESTIONS[k] || "" }) : null
+          ]);
+        })
+      ])
+    );
+    const suggested = ctrl.nextPropertyCode();
+    const codeInput = el("input", { id: "sheetCode", value: sh.code || suggested });
+    codeInput.oninput = () => {
+      sh.code = codeInput.value; // 自訂代號邊打邊存，重畫後不會被重置（F-R16B-11）
+    };
+    const create = el("button", { type: "button", class: "primary", id: "sheetCreate", text: "建立這間" });
+    create.onclick = async () => {
+      let id = (codeInput.value || "").trim();
+      if (!id || id === suggested) id = ctrl.nextPropertyCode();
+      const fields = { id };
+      for (const [k, v] of Object.entries(pickSheetFields(sh.values))) fields[k] = sheetRawToField(k, v); // 先過欄位白名單，多餘的鍵（例如 id）不寫入
+      const memoText = (memo.value || "").trim();
+      if (memoText) fields.memory_note = memoText;
+      fields.source_note = "現場帶看單拍照建檔";
+      fields.agent_questions = sh.asks.filter((k) => sh.values[k] === undefined || sh.values[k] === "");
+      const r = await runCommand(() => ctrl.addProperty(fields, { withViewing: false, sheetPhoto: sh.photo ? { blob: sh.photo, name: sh.photo.name } : null }));
+      if (!r?.ok) return;
+      ui.visit.selectedId = id;
+      ui.sheet = freshSheet();
+      location.hash = "#visit/1";
+    };
+    nodes.push(
+      el("div", { class: "card", id: "sheetCreateCard" }, [
+        el("details", { class: "fold", id: "sheetAdv" }, [
+          el("summary", { text: "進階:改代號" }),
+          el("label", { text: "物件代號（App 已經自動給了，可改但不用改，不要寫門牌）" }, [codeInput])
+        ]),
+        create
+      ])
+    );
+  }
+  mount(appEl, nodes);
+}
+
+/** 這間物件還沒問到的「要問仲介」清單（問到填了就消失）：看房第 1 站與問價紀錄頁頂端顯示。 */
+function askListCard(propertyId) {
+  const p = state.properties.find((x) => x.id === propertyId);
+  const keys = Array.isArray(p?.agent_questions) ? p.agent_questions : [];
+  const open = keys.filter((k) => ASK_QUESTIONS[k] && (p[k] === undefined || p[k] === null || p[k] === ""));
+  if (!open.length) return null;
+  return el("div", { class: "card ask-card", id: "askList" }, [
+    el("h3", { text: "要問仲介的問題" }),
+    ...open.map((k) => {
+      const go = el("button", { type: "button", "data-ask-go": k, text: "問到了，去填" });
+      go.onclick = () => {
+        ui.focusAfterRender = SHEET_INPUT_IDS[k] || null;
+        location.hash = `#property/detail/${encodeURIComponent(propertyId)}`;
+      };
+      return el("div", { class: "check-item", "data-ask-item": k }, [el("span", { text: ASK_QUESTIONS[k] }), go]);
+    })
+  ]);
+}
+
+/** 三個入口共用：現場新增（拍帶看單）按鈕。 */
+function sheetEntryButton(id) {
+  const b = el("button", { type: "button", class: "big-btn", id, text: "現場新增(拍帶看單)" });
+  b.onclick = () => {
+    location.hash = "#sheet";
+  };
+  return b;
+}
+
 function pageProperty(route) {
   if (route.sub === "compare") return pageCompare();
   if (route.sub === "field") return pageField();
@@ -1929,6 +2303,7 @@ function pagePropertyList() {
   const nodes = rows.map((r) => {
     const b = el("button", { type: "button", class: "prop-row", "data-property": r.id }, [
       el("strong", { text: rowLabel(r) }),
+      r.memoryNote ? el("span", { class: "meta memo", text: memoryLine(r.memoryNote) }) : null,
       el("span", { class: "meta", text: `區域 ${r.area || "未填"}　狀態 ${r.status}　分數 ${r.score}　${r.counted ? "已計入" : "未計入"}　詳細 ›` })
     ]);
     b.onclick = () => {
@@ -1940,8 +2315,10 @@ function pagePropertyList() {
     propertyTabs("list"),
     el("div", { class: "card", id: "propList" }, [
       el("h2", { text: `物件（${rows.length} 間）` }),
-      ...(nodes.length ? nodes : [el("p", { class: "hint", text: "還沒有物件。可以從筆記匯入，或到「看房」新增一間。" })])
-    ])
+      sheetEntryButton("sheetEntryProperty"),
+      ...(nodes.length ? nodes : [el("p", { class: "hint", text: "還沒有物件。可以從筆記匯入，或在下面新增一間。" })])
+    ]),
+    addPropertyCard({ onAdded: (id) => { location.hash = `#property/detail/${encodeURIComponent(id)}`; } })
   ]);
 }
 
@@ -2008,6 +2385,8 @@ function pagePropertyDetail(id) {
       ]),
       input("pschooldate", "學區核實公告日期", { placeholder: "YYYY-MM-DD" }),
       input("pbaths", "衛浴數（幾間浴室，現場會依這個數字建立浴室的站）", { inputmode: "numeric" }),
+      input("pmemo", "記憶備註（寫一句幫你記住這間，不要寫門牌號碼）", { maxlength: "200" }),
+      input("pfloor", "樓層備註（例如 7 樓，共 11 樓）", { maxlength: "100" }),
       input("pschoolyear", "學區適用學年度", { inputmode: "numeric" }),
       input("pfake", "假價格警訊項數", { inputmode: "numeric" }),
       input("pfakealt", "假價格替代解釋"),
@@ -2103,6 +2482,8 @@ function fillPropForm(p) {
   set("#pping", p.ping_total);
   set("#prooms", p.rooms);
   set("#pbaths", p.baths);
+  set("#pmemo", p.memory_note);
+  set("#pfloor", p.floor_note);
   set("#ptype", p.product_type);
   set("#pwalkmin", p.walk_min);
   set("#phold", p.hold_years);
@@ -2196,6 +2577,8 @@ function readPropForm() {
       school_zone_verified: $("#pschoolv")?.value,
       school_zone_verified_date: $("#pschooldate")?.value || null,
       fake_price_alt: $("#pfakealt")?.value || "",
+      memory_note: ($("#pmemo")?.value || "").trim(),
+      floor_note: ($("#pfloor")?.value || "").trim(),
       deal_breaker_hits: splitList($("#pdeal")?.value || ""),
       has_parking: $("#phaspark")?.value === "有" ? true : $("#phaspark")?.value === "無" ? false : null,
       parking_included_in_ask: $("#pparkin")?.value === "否" ? false : $("#pparkin")?.value === "是" ? true : null,
@@ -2222,10 +2605,23 @@ function releaseRecorder() {
   ui.recording = false;
 }
 
+/** 錄音按鈕的畫面狀態（錄音區的按鈕、看房中工具列的按鈕、經過時間的計時）；沒有那個按鈕的頁面照樣可以呼叫。 */
+function paintRecUi() {
+  const btn = $("#recBtn");
+  if (btn) btn.textContent = ui.recording ? "停止錄音" : "開始錄音（每 5 秒存本機）";
+  if (ui.recording && !ui.recTick) {
+    ui.recTick = setInterval(() => paintFieldBar(), 1000);
+    ui.recTick.unref?.();
+  } else if (!ui.recording && ui.recTick) {
+    clearInterval(ui.recTick);
+    ui.recTick = null;
+  }
+  paintFieldBar();
+}
+
 function finishRecordingUi(result) {
   releaseRecorder();
-  const btn = $("#recBtn");
-  if (btn) btn.textContent = "開始錄音（每 5 秒存本機）";
+  paintRecUi();
   if (result?.banner) {
     showError(result.banner);
     interruptEl.classList.remove("hidden");
@@ -2244,6 +2640,26 @@ async function stopRec() {
   }
   const result = ctrl.handleRecordingStopped({ expected: true });
   finishRecordingUi(result);
+}
+
+/**
+ * 所有「開始錄音」的入口共用的同意檢查（F-R16B-02）：這次看房還沒確認「已告知在場的人」就先出確認，不直接錄；
+ * 確認過一次這次看房就記住（工具列的確認、或錄音區勾了「已告知在場的人並取得同意」都算）。停止錄音不需要確認。
+ */
+async function requestRec() {
+  if (ui.recording) {
+    await stopRec();
+    return;
+  }
+  const vid = state.currentViewingId;
+  if (vid && ui.recConsentFor !== vid && $("#consent")?.checked) ui.recConsentFor = vid;
+  if (!vid || ui.recConsentFor !== vid) {
+    ui.tbAsk = true;
+    paintFieldBar();
+    showWarn("開始錄音前，請先確認已告知在場的人");
+    return;
+  }
+  await toggleRec();
 }
 
 async function toggleRec() {
@@ -2293,14 +2709,18 @@ async function toggleRec() {
     };
     mr.start(5000);
     ui.recording = true;
+    ui.recStartedAt = Date.now();
+    ui.recMarkLast = null; // 這次錄音還沒記過任何站的標記（F-R16-55）
     try {
       rec.wake = await navigator.wakeLock?.request("screen");
     } catch {
       /* ignore */
     }
-    $("#recBtn").textContent = "停止錄音";
+    paintRecUi();
+    noteStationMark(); // 在某一站開始錄音，立刻記一筆「第 0 秒在這一站」
   } catch (err) {
     releaseRecorder(); // 啟動到一半失敗，麥克風與錄音器都要放掉
+    paintRecUi();
     ctrl.stopRecording?.();
     showError(`無法取得麥克風：${err.message || err}`);
   }
@@ -2953,6 +3373,7 @@ async function exportToNotes() {
     showError(r.error || "匯出失敗");
     return { ok: false, message: r.error || "匯出失敗" };
   }
+  await ctrl.recordSyncEvent("export");
   const where = r.method === "share" ? "已交給分享選單，請選雲端硬碟的「看房同步」資料夾。" : "已下載到這支手機，請把它放進雲端硬碟的「看房同步」資料夾。";
   return { ok: true, message: `${where}（${pack.filename}，共 ${pack.summary.properties} 間物件）${stretchNote}` };
 }
@@ -2987,9 +3408,80 @@ const MORE_MENU = [
   ["profile", "理想輪廓", "你想要什麼、不要什麼"]
 ];
 
+/** 「和筆記同步」卡：上次匯入（時間與檔名）、上次匯出，兩個按鈕（F-R16-21）。 */
+function syncTimeText(iso) {
+  const t = Date.parse(iso || "");
+  if (!Number.isFinite(t)) return "還沒有";
+  const d = new Date(t);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function syncCard() {
+  const sync = normalizeCoach(state.coach).sync || {};
+  const msg = el("p", { class: "hint", id: "syncMsg" });
+  const exp = el("button", { type: "button", id: "syncExport", text: "匯出給電腦整理" });
+  exp.onclick = async () => {
+    const r = await exportToNotes();
+    msg.textContent = r.message;
+    refreshState();
+    if (r.ok) render();
+  };
+  const imp = el("button", { type: "button", id: "syncImport", text: "匯入最新同步檔" });
+  imp.onclick = () => {
+    location.hash = "#more/import";
+  };
+  return el("div", { class: "card", id: "syncCard" }, [
+    el("h2", { text: "和筆記同步" }),
+    el("p", { id: "syncLastImport", text: `上次匯入：${syncTimeText(sync.last_import_at)}${sync.last_import_name ? `　${sync.last_import_name}` : ""}` }),
+    el("p", { id: "syncLastExport", text: `上次匯出：${syncTimeText(sync.last_export_at)}` }),
+    el("div", { class: "row" }, [exp, imp]),
+    el("p", { class: "hint", text: "匯出：手機支援就會開分享選單，請選雲端硬碟的「看房同步」資料夾。匯入：到「看房同步」資料夾選「同步匯入檔_最新」。" }),
+    msg
+  ]);
+}
+
+/** 做成結果卡：畫圖、顯示預覽，兩個按鈕「分享」與「下載」（F-R16-31）。 */
+async function showResultCard(propertyId, msg) {
+  const box = $("#cardBox");
+  const model = buildResultCardModel(state, propertyId, { nowMs: Date.now() });
+  if (!model.shareable) {
+    msg.textContent = model.error || "這間不能做成結果卡";
+    return;
+  }
+  const canvas = document.createElement("canvas");
+  const drawn = drawResultCard(canvas, model);
+  if (!drawn.ok) {
+    msg.textContent = "這支手機的瀏覽器不支援畫圖，沒辦法做結果卡。";
+    return;
+  }
+  const blob = await new Promise((resolve) => {
+    if (typeof canvas.toBlob === "function") canvas.toBlob((b) => resolve(b), "image/png");
+    else resolve(null);
+  });
+  if (!blob) {
+    msg.textContent = "結果卡沒畫成功，請再試一次。";
+    return;
+  }
+  const filename = resultCardFileName(propertyId, Date.now());
+  const truncatedNote = drawn.truncated ? el("p", { class: "hint warn", id: "cardTruncated", text: "內容過長,已截斷,請縮短複盤文字" }) : null;
+  const img = el("img", { id: "cardPreview", alt: "看房結果卡預覽", src: createPreviewUrl(blob), class: "card-preview" });
+  const share = el("button", { type: "button", class: "primary", id: "cardShare", text: "分享" });
+  const down = el("button", { type: "button", id: "cardDownload", text: "下載" });
+  const done = el("p", { class: "hint", id: "cardMsg", text: `檔名：${filename}。照片、記憶備註、地址、可承受上限與財務數字都不在圖裡。App 不代送，請自己選 LINE 或雲端硬碟。` });
+  const go = async (forceDownload) => {
+    const r = await deliverResultCard({ blob, filename, gate: model.gate, forceDownload });
+    done.textContent = r.cancelled ? "已取消，沒有分享。" : r.ok ? (r.method === "share" ? "已交給分享選單。" : "已下載到這支手機。") : r.error || "沒有成功";
+  };
+  share.onclick = () => go(false);
+  down.onclick = () => go(true);
+  mount(box, [img, truncatedNote, el("div", { class: "row" }, [share, down]), done]);
+}
+
 function moreMenu() {
   const exportMsg = el("p", { id: "exportNotesMsg", class: "hint" });
   mount(appEl, [
+    syncCard(),
     el("div", { class: "card" }, [
       el("h2", { text: "更多" }),
       el("a", { class: "menu-link", href: "#coach", "data-more": "coach" }, ["口袋大叔", el("span", { class: "hint", text: "　每個階段一步一步教你做、怎麼說、問什麼" })]),
@@ -3362,7 +3854,7 @@ function moreDrafts() {
       el("h3", { text: "上傳包：逐張勾選現場照片後打包" }),
       el("div", { id: "uploadPick" },
         (state.media || [])
-          .filter((m) => m.viewing_id === state.currentViewingId && m.type === "photo" && m.kind !== "visit_doc")
+          .filter((m) => m.viewing_id === state.currentViewingId && isUploadablePhoto(m))
           .map((m) =>
             el("label", { class: "check-item" }, [
               el("input", { type: "checkbox", class: "upPhoto", "data-id": m.id }),
@@ -3897,6 +4389,7 @@ function pagePriceLog(route) {
   const rows = priceLogFor(state.priceLog, pickId);
   mount(appEl, [
     backLink(`#property/detail/${encodeURIComponent(pickId)}`, "← 回這間物件"),
+    askListCard(pickId),
     el("div", { class: "card", id: "plForm" }, [
       el("h2", { text: "問價紀錄" }),
       el("p", { class: "hint", text: "每一次對方開價、你詢問、你回應、仲介轉述、斡旋，都記一筆。只留在這支手機，不會自動寫進任何給仲介的草稿。" }),
@@ -4047,24 +4540,166 @@ function tryLeaveOnsite(cur) {
   location.hash = "#visit/4";
 }
 
-/** 只拍照的接線（現場頁與每一站共用）；stationKey 有給就把照片記在那一站。 */
-function wirePhoto(viewingId, { stationKey } = {}) {
-  const btn = $("#photoBtn");
-  const file = $("#photoFile");
-  if (!btn || !file) return;
-  btn.onclick = () => file.click();
+// ---------------------------------------------------------------------------
+// 第 16 輪 F-R16-54、F-R16-55：看房中工具列（拍照與錄音隨時按得到）與錄音站別標記
+// ---------------------------------------------------------------------------
+
+let fieldBarEl = null;
+
+/** 這一頁要不要有工具列：只要有進行中的看房，看一間第 2 到 4 步與首頁（每一站頁與站台總覽都在第 3 步裡）。回傳進行中的看房，沒有就回 null。 */
+function fieldBarViewing(route) {
+  const open = currentOpenViewing(state);
+  if (!open) return null;
+  if (route.page === "home") return open;
+  if (route.page === "visit" && ui.visit.step >= 2 && ui.visit.viewingId === open.id) return open;
+  return null;
+}
+
+function flashFieldBar(text) {
+  ui.tbMsg = text;
+  if (ui.tbTimer) clearTimeout(ui.tbTimer);
+  ui.tbTimer = setTimeout(() => {
+    ui.tbMsg = "";
+    ui.tbTimer = null;
+    paintFieldBar();
+  }, 3000);
+  ui.tbTimer.unref?.();
+  paintFieldBar();
+}
+
+function recElapsedText() {
+  const sec = Math.max(0, Math.floor((Date.now() - (ui.recStartedAt || Date.now())) / 1000));
+  return `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+function paintFieldBar() {
+  const bar = fieldBarEl;
+  if (!bar || typeof document === "undefined" || !document.body?.contains?.(bar)) return; // 計時器晚到時頁面可能已經不在了
+  const show = Boolean(ui.field);
+  bar.classList.toggle("hidden", !show);
+  document.body?.classList.toggle("has-fieldbar", show);
+  const recBtn = bar.querySelector("#tbRec");
+  if (recBtn) {
+    recBtn.textContent = ui.recording ? `停止錄音 ${recElapsedText()}` : "錄音";
+    recBtn.classList.toggle("recording", Boolean(ui.recording));
+  }
+  const liveRec = document.querySelector("#liveRec");
+  if (liveRec) liveRec.textContent = ui.recording ? "停止錄音" : "錄音";
+  const msg = bar.querySelector("#tbStatus");
+  if (msg) msg.textContent = ui.tbMsg || (ui.recording ? "錄音中，換頁不會中斷" : "");
+  bar.querySelector("#tbConfirm")?.classList.toggle("hidden", !(ui.tbAsk && show && !ui.recording));
+}
+
+function buildFieldBar() {
+  const photo = el("button", { type: "button", class: "tb-btn", id: "photoBtn", text: "拍照" });
+  const file = el("input", { id: "photoFile", type: "file", accept: "image/*", capture: "environment", class: "hidden" });
+  const recBtn = el("button", { type: "button", class: "tb-btn", id: "tbRec", text: "錄音" });
+  const consent = el("input", { type: "checkbox", id: "tbConsent" });
+  const go = el("button", { type: "button", class: "primary", id: "tbConsentGo", text: "開始錄音" });
+  const confirm = el("div", { class: "fieldbar-confirm hidden", id: "tbConfirm" }, [el("label", { class: "check-item" }, [consent, " 已告知在場的人"]), go]);
+  const bar = el("div", { class: "fieldbar hidden", id: "fieldBar", role: "toolbar", "aria-label": "看房中工具列" }, [
+    confirm,
+    el("div", { class: "fieldbar-row" }, [photo, recBtn]),
+    el("p", { class: "fieldbar-status", id: "tbStatus" }),
+    file
+  ]);
+  photo.onclick = () => file.click();
   file.onchange = async (ev) => {
     const f = ev.target.files[0];
-    if (!f) return;
+    const ctx = ui.field;
+    if (!f || !ctx) return;
     if (isStaleFieldView(ui.fieldViewingId, state.currentViewingId)) {
       staleFieldNotice();
       return;
     }
-    const r = await ctrl.takePhoto({ blob: f, name: f.name, viewingId, stationKey });
+    const r = await ctrl.takePhoto({ blob: f, name: f.name, viewingId: ctx.viewingId, stationKey: ctx.stationKey || undefined });
     refreshState();
-    if (!r.ok) showError(r.error);
-    updatePhotoCount(viewingId, stationKey);
+    if (!r.ok) {
+      showError(r.error);
+      return;
+    }
+    const n = (state.viewings.find((v) => v.id === ctx.viewingId)?.photos || []).length;
+    flashFieldBar(`已存第 ${n} 張`);
+    updatePhotoCount(ctx.viewingId, ctx.stationKey);
   };
+  recBtn.onclick = async () => {
+    if (ui.recording) {
+      await stopRec();
+      return;
+    }
+    const ctx = ui.field;
+    if (!ctx) return;
+    // 第一次按：先確認「已告知在場的人」，勾了才開始；這次看房記住，不再問
+    if (ui.recConsentFor !== ctx.viewingId) {
+      ui.tbAsk = true;
+      paintFieldBar();
+      return;
+    }
+    await toggleRec();
+  };
+  go.onclick = async () => {
+    const ctx = ui.field;
+    if (!consent.checked || !ctx) return;
+    ui.recConsentFor = ctx.viewingId;
+    ui.tbAsk = false;
+    consent.checked = false;
+    await toggleRec();
+  };
+  return bar;
+}
+
+/** 每次重畫之後呼叫：決定這一頁要不要工具列、照片記到哪一站，並補記錄音的站別標記。 */
+function syncFieldBar(route) {
+  const viewing = fieldBarViewing(route);
+  ui.field = viewing ? { viewingId: viewing.id, stationKey: ui.stationNow?.key || null, stationName: ui.stationNow?.name || "" } : null;
+  if (viewing) ui.fieldViewingId = viewing.id;
+  if (ui.field && !fieldBarEl) {
+    fieldBarEl = buildFieldBar();
+    const navEl = document.querySelector(".nav");
+    if (navEl && navEl.parentNode) navEl.parentNode.insertBefore(fieldBarEl, navEl);
+    else document.body.appendChild(fieldBarEl);
+  }
+  paintFieldBar();
+  noteStationMark();
+}
+
+/** 錄音中換到某一站：在這次看房記一筆標記（錄音開始後第幾秒、站名），之後可以回聽或轉文字時找到那一段。 */
+function noteStationMark() {
+  if (!ui.recording) return;
+  const here = ui.stationNow;
+  if (!here) {
+    ui.recMarkLast = null; // 離開站頁之後再回到同一站，要再記一筆
+    return;
+  }
+  if (ui.recMarkLast === here.key) return;
+  ui.recMarkLast = here.key;
+  const viewingId = rec.boundViewingId || here.viewingId;
+  const sec = Math.max(0, Math.floor((Date.now() - (ui.recStartedAt || Date.now())) / 1000));
+  (async () => {
+    const r = await ctrl.addRecMark({ viewingId, sec, station_key: here.key, name: here.name });
+    if (r?.ok) refreshState();
+  })();
+}
+
+/** 首頁最上面「看房中」卡：回到這一站、拍照、錄音。 */
+function liveViewingCard() {
+  const open = currentOpenViewing(state);
+  if (!open) return null;
+  const prop = state.properties.find((p) => p.id === open.property_id) || {};
+  const memo = memoryLine(prop.memory_note, 40);
+  const back = el("button", { type: "button", class: "primary", id: "liveBack", text: "回到這一站" });
+  const shoot = el("button", { type: "button", id: "liveShoot", text: "拍照" });
+  const recBtn = el("button", { type: "button", id: "liveRec", text: ui.recording ? "停止錄音" : "錄音" });
+  back.onclick = () => {
+    const n = ui.visit.lastStation && ui.visit.lastStation.viewingId === open.id ? ui.visit.lastStation.n : null;
+    location.hash = n ? `#visit/3/${n}` : "#visit/2";
+  };
+  shoot.onclick = () => $("#photoBtn")?.click();
+  recBtn.onclick = () => $("#tbRec")?.click();
+  return el("div", { class: "card live-card", id: "liveCard" }, [
+    el("h2", { id: "liveTitle", text: `看房中:${open.property_id}${memo ? ` ${memo}` : ""}` }),
+    el("div", { class: "row" }, [back, shoot, recBtn])
+  ]);
 }
 
 /** 「這次已拍 N 張」（在某一站時，另外說這一站拍了幾張）。 */
@@ -4220,6 +4855,8 @@ function visitStationPage(cur, defs, idx) {
   const total = stations.length;
   const at = Math.min(Math.max(idx, 1), total);
   const st = stations[at - 1];
+  ui.stationNow = { viewingId: cur.id, key: st.key, name: st.name };
+  ui.visit.lastStation = { viewingId: cur.id, n: at };
   const itemsOf = (s) => stationItems(s, { customAll: coach.custom_items, customHere: view().sites?.custom || [], hiddenIds: coach.hidden_items });
   const items = itemsOf(st);
   const stationHash = (n) => `#visit/3/${n}`;
@@ -4270,6 +4907,7 @@ function visitStationPage(cur, defs, idx) {
         ])
       : null,
     stationBar,
+    at === 1 ? askListCard(cur.property_id) : null,
     chips,
     el("div", { class: "card", id: "stationCard", "data-station": st.key }, [
       // 站名與第幾站已經在頂端那一行；這兩個保留給輔助與舊的找法，不佔畫面
@@ -4328,8 +4966,6 @@ function visitStationPage(cur, defs, idx) {
       ])
     ]),
     el("p", { class: "hint", id: "photoCount", text: `這次已拍 ${(view().photos || []).length} 張（這一站 ${(view().photos || []).filter((p) => p.station_key === st.key).length} 張）` }),
-    el("button", { type: "button", class: "fab", id: "photoBtn", text: "拍照" }),
-    el("input", { id: "photoFile", type: "file", accept: "image/*", capture: "environment", class: "hidden" })
   ];
   const last = at >= total;
   const confirming = ui.visit.confirmSkip && last && computeMissing(cur, "現場").length > 0;
@@ -4347,7 +4983,6 @@ function visitStationPage(cur, defs, idx) {
     nodes,
     bar,
     after() {
-      wirePhoto(cur.id, { stationKey: st.key });
       if (!view().sites) {
         // 第一次走到站：依物件的房數、衛浴數把站建起來（沒有數字就先建 1 間），建好再重畫一次
         runCommand(() => ctrl.ensureSites(cur.id), { keepNotices: true }).then((r) => {

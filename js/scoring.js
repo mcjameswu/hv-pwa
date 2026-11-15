@@ -736,6 +736,9 @@ export function viewingAnswers(state, viewing) {
       let label = normalizeCondition(val).value;
       // 第 15 輪 F-R15-01：漏水題答「異常」「有問題」就是嚴重漏水，不能因為字不在屋況四個字裡就被忽略
       if (!label && key === "leak" && (val === "異常" || val === "有問題")) label = "嚴重";
+      // 第 16 輪 F-R16-49：非漏水的屋況題答「有問題」「異常」對到「輕微」；其他看不懂的值記成「待核」，不得靜默略過
+      if (!label && key !== "leak" && (val === "異常" || val === "有問題")) label = "輕微";
+      if (!label && !answerBlank(val) && val !== "待核" && normalizeCondition(val).state === "invalid") label = "待核";
       if (label && (cond[key] === undefined || (SEVERITY[label] ?? 9) < (SEVERITY[cond[key]] ?? 9))) {
         cond[key] = label;
         condItem[key] = item.id;
