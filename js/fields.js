@@ -213,6 +213,9 @@ export const FIELD_TABLES = {
     community_name: spec({ type: "string", nullable: true, privacy: "P1", pii: true }),
     // 第 16 輪 F-R16-53：記憶備註（幫自己記住這間：在哪個路段、靠近哪裡、第一印象；不要寫門牌號碼）。只記錄，不影響評分指紋
     memory_note: spec({ type: "string", maxLength: 200, nullable: true, privacy: "P1", pii: true }),
+    // 第 17 輪 F-R17-04：加分項（書房、可放一套健身器材的空間），值只有有、無、未知；只記錄與顯示，不影響評分指紋，不進筆記匯出
+    has_study: spec({ type: "enum", enum: ["有", "無", "未知"], nullable: true, privacy: "P1" }),
+    gym_space: spec({ type: "enum", enum: ["有", "無", "未知"], nullable: true, privacy: "P1" }),
     // 第 12 輪：從筆記匯入的待看物件欄位（只記錄，不影響評分指紋）
     notes_status: spec({ type: "enum", enum: NOTES_STATUSES, nullable: true, privacy: "P1" }),
     floor_note: spec({ type: "string", maxLength: 100, nullable: true, privacy: "P1", pii: true }),

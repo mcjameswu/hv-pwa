@@ -1,5 +1,5 @@
 export const SCHEMA_VERSION = "import_v1";
-export const APP_VERSION = "1.19.1";
+export const APP_VERSION = "1.20.1";
 export const DB_VERSION = 8; // R13：新增口袋教練（coach）與問價紀錄（priceLog）兩張表，資料庫升到第 8 版
 
 export const FIELD_LABELS = {
@@ -43,6 +43,8 @@ export const FIELD_LABELS = {
   target_areas: "目標區域",
   rooms_min: "最少房數",
   rooms_preferred: "偏好房數",
+  has_study: "書房",
+  gym_space: "健身空間",
   age_max: "屋齡上限(年)",
   product_type: "產品類型",
   mgmt_fee_max: "管理費上限(元/月)",

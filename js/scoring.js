@@ -334,6 +334,61 @@ function normalizeGroup(items) {
 }
 
 /**
+ * 第 17 輪 F-R17-03：實際建坪下限（必要條件）。
+ * 從理想輪廓的 area_range 取下限（「35-70」取 35；沒填或格式不對就回 null，不判）。
+ * 白話：你說自住實際建坪要 35 坪以上。權狀上的「登記總坪」包含公設與車位，所以實際能住的坪數一定比它小。
+ */
+export function parseAreaLower(areaRange) {
+  if (typeof areaRange !== "string" && typeof areaRange !== "number") return null;
+  const s = String(areaRange).replace(/坪/g, "").replace(/\s+/g, "");
+  const m = s.match(/^([0-9]+(?:\.[0-9]+)?)[-~～–—至到]([0-9]+(?:\.[0-9]+)?)$/);
+  if (!m) return null;
+  const lo = n(m[1]);
+  const hi = n(m[2]);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo <= 0 || hi < lo) return null;
+  return lo;
+}
+
+/**
+ * 實際建坪必要條件的判斷（純函式，只看物件與理想輪廓）。
+ * 已知登記總坪時，上限估計 = 登記總坪減車位坪（車位坪不知道當 0）：
+ *  - 上限估計小於下限：fail（一票否決）。白話：連「扣掉車位、公設都不扣」的最樂觀估計都不到，實際一定不到，所以直接淘汰。
+ *  - 透天沒有公設：不小於下限就 pass。
+ *  - 大樓、華廈、公寓或類型不知道：不小於下限不淘汰，但公設比不明，實際建坪可能不到，所以 public_unknown 只提醒並列入待問。
+ *  - 登記總坪不知道：ping_missing（顯示「坪數待補」），不淘汰。
+ *  - 車位坪是負數（資料不正確）：park_invalid（顯示「坪數待核(車位坪不正確)」），不淘汰也不當 0（F-R17B-04）。
+ * status：none（沒下限不判）、fail、pass、public_unknown、ping_missing、park_invalid。
+ * fail 與 public_unknown 另帶 explain：一句白話說明，畫面放在提醒旁邊（F-R17B-02）。
+ */
+export function sizeCheck(property, profile) {
+  const lower = parseAreaLower(profile?.area_range);
+  if (lower === null) return { status: "none", lower: null };
+  const ping = n(property?.ping_total);
+  if (ping === null || ping <= 0) return { status: "ping_missing", lower, alert: "坪數待補" };
+  const park = n(property?.parking_ping);
+  if (park !== null && park < 0) return { status: "park_invalid", lower, alert: "坪數待核(車位坪不正確)" };
+  const upper = Math.round((ping - (park !== null && park > 0 ? park : 0)) * 100) / 100;
+  if (upper < lower) {
+    return {
+      status: "fail",
+      lower,
+      upper,
+      reason: `實際建坪低於 ${lower} 坪(必要條件)`,
+      explain: `登記總坪包含公設與車位,扣掉車位還不到 ${lower} 坪,實際能住的一定更小,所以直接不考慮。`
+    };
+  }
+  const type = typeof property?.product_type === "string" ? property.product_type : "";
+  if (type.includes("透天")) return { status: "pass", lower, upper };
+  return {
+    status: "public_unknown",
+    lower,
+    upper,
+    alert: "實際建坪待核(公設比不明)",
+    explain: "大樓與華廈的公設比例還不知道,所以只提醒,不淘汰。"
+  };
+}
+
+/**
  * vetoEvidence：看房紀錄累積的否決證據 [{ kind, viewing_id, item_id, released }]。
  * 沒傳（直接呼叫的測試）時，退回用 screenAnswers 判斷現金流與看後決策。
  */
@@ -352,6 +407,8 @@ export function gateOne(property, profile, finance, scoring = DEFAULT_SCORING, c
   const rooms = n(property.rooms);
   const min = n(profile?.rooms_min);
   if (min !== null && rooms !== null && rooms < min) hits.push("房數低於最少房數");
+  const sizeJudge = sizeCheck(property, profile);
+  if (sizeJudge.status === "fail") hits.push(sizeJudge.reason);
 
   const total = positiveOrNull(n(property.ask_total)); // 開價 0 視同沒填，不判延伸帶也不判超過上限
   const b01 = n(finance?.budget_cap_total);
@@ -444,6 +501,8 @@ export function scoreProperty(input) {
   const gate = gateOne(property, profile, finance, sc, condition, screenAnswers, vetoEvidence);
   const alerts = [];
   if (weightsInvalid) alerts.push("評分設定有空白或不合法的值");
+  const sizeAlert = sizeCheck(property, profile).alert;
+  if (sizeAlert) alerts.push(sizeAlert);
   const split = unitPriceAfterParking(property);
   const walkMode = property.walk_mode;
   const sr = screenResolved;

@@ -171,13 +171,35 @@ function nameOnly(value) {
 
 /**
  * 在一行裡找標籤加數字的第一個「不屬於車位」的命中（F-R16B-04）：命中位置前面 4 個字內有「車位」（或緊接 parking）的不算，
- * 這樣「車位價格:150 萬」「車位坪數:10 坪」不會被當成開價與總坪。
+ * 這樣「車位坪數:10 坪」不會被當成總坪。
+ *
+ * 開價專用（priceOnly，F-R17B-01）：只有「車位」和數字之間出現價格類標籤（價、價格、售價、另計價、開價）而且沒有出現「總價」時才跳過。
+ * 白話：「車位價格:150 萬」是車位的價錢，不是房子的開價；但「含車位 總價 1180 萬」「車位另計 總價 1180 萬」寫的是房子的總價，要收。
  */
-function matchNotParking(line, re) {
+function matchNotParking(line, re, { priceOnly = false } = {}) {
   const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
   for (const m of line.matchAll(g)) {
     const before = line.slice(0, m.index);
-    if (/車位/.test(before.slice(-4)) || /parking\s*$/i.test(before.slice(-10))) continue;
+    if (/parkings*$/i.test(before.slice(-10))) continue;
+    if (priceOnly) {
+      const lastPark = before.lastIndexOf("車位");
+      if (lastPark >= 0) {
+        const between = before.slice(lastPark + 2);
+        // 車位和命中之間沒有數字與分隔符號、不超過 12 個字，才算同一段；段內（含命中的標籤）有價格類標籤而沒有「總價」就是車位價
+        if (between.length <= 12 && !/[0-9、，,;；|｜/／]/.test(between)) {
+          const seg = between + m[0].replace(/[0-9].*$/s, "");
+          if (/價/.test(seg) && !/總價/.test(seg)) continue;
+        }
+      }
+      return m;
+    }
+    if (/車位/.test(before.slice(-4))) continue;
+    // F-R17-02(b)：「車位(平面)價格:150 萬」這種車位和價格字之間隔超過 4 個字的同一段，也屬於車位（中間沒有數字與分隔符號、不超過 12 個字）
+    const lastPark = before.lastIndexOf("車位");
+    if (lastPark >= 0) {
+      const between = before.slice(lastPark + 2);
+      if (between.length <= 12 && !/[0-9、，,;；|｜/／]/.test(between)) continue;
+    }
     return m;
   }
   return null;
@@ -220,7 +242,7 @@ export function parseViewingSheet(text, { areas = [], now = Date.now() } = {}) {
   {
     const re = new RegExp(`(?:${LABELS.ask})\\s*(?:[:：=]|\\s)?\\s*(?:NT\\$|NTD|TWD|\\$)?\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(萬元|萬|万|億|元)?`, "i");
     for (const line of lines) {
-      const m = matchNotParking(line, re);
+      const m = matchNotParking(line, re, { priceOnly: true });
       if (m) {
         const v = priceToWan(m[1], m[2], line);
         if (v !== null) {
@@ -344,7 +366,12 @@ export function parseViewingSheet(text, { areas = [], now = Date.now() } = {}) {
         set("has_parking", false);
       }
       const pingM = pj.match(/(?:車位|parking)[^\n]*?([0-9]+(?:\.[0-9]+)?)\s*(?:坪|ping)/i) || pj.match(/([0-9]+(?:\.[0-9]+)?)\s*坪\s*車位/);
-      const priceM = pj.match(/車位(?:價|價格|售價|另計|另購|開價)?\s*(?:[:：=]|\s)?\s*(?:NT\$|NTD|\$)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(萬元|萬|万|元)/);
+      // F-R17B-01：「車位 有 總價 1180 萬」的總價是房子的總價，不是車位價；比對車位價前先把「總價」的價字遮掉
+      const pjPrice = pj.replace(/總價/g, "總＊");
+      const priceM =
+        pjPrice.match(/車位(?:[^\n0-9:：=、，,;；|｜]{0,10}?(?:價格|價|售價|另計|另購|開價))?\s*(?:[:：=]|\s)?\s*(?:NT\$|NTD|\$)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(萬元|萬|万|元)/) ||
+        // F-R17-02(a)：沒寫單位的「車位價格:150」，只在有「價」字的標籤下收，照開價的無單位規則（小於 10 萬當萬元）
+        pjPrice.match(/車位(?:[^\n0-9:：=、，,;；|｜]{0,10}?)(?:價格|價|售價|另計|另購|開價)\s*(?:[:：=]|\s)?\s*(?:NT\$|NTD|\$)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)(?!\s*(?:坪|ping|個|位|格|樓|層|F|號))/i);
       const pingN = pingM ? num(pingM[1]) : null;
       if (pingN !== null && pingN > 0 && pingN < 100) set("parking_ping", pingN);
       const priceV = priceM ? priceToWan(priceM[1], priceM[2], pj) : null;

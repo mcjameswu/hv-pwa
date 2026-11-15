@@ -2,7 +2,7 @@
  * Pure UI helpers extracted so screen rules can be tested without a browser.
  * 畫面判斷抽成純函式：核取方塊、表單數字、分數列顯示。
  */
-import { isFlagOn, parseNumericRaw, parseNumberByKind } from "./fields.js";
+import { isFlagOn, parseNumericRaw, parseNumberByKind, capIsBlank, normalizeValue, toFiniteNumber } from "./fields.js";
 import { SCREEN_LABELS, SELF_FIT_LABEL } from "./defaults.js";
 import { splitList } from "./lists.js";
 import { rankEligible } from "./rank-eligible.js";
@@ -111,10 +111,65 @@ export function propertySelfFitLine(state, property) {
   return selfFitText(state?.travel, property?.area_code);
 }
 
+/**
+ * 第 17 輪 F-R17-01：「是否在暫定上限內」標籤（只在本機畫面顯示）。
+ * 白話：你手打的可承受上限只放在這支手機。這個標籤把每間的開價（有時加車位價）和上限比一下，告訴你「在內、超過、待確認車位、上限待填」。
+ * 它只是顯示與提醒，不改淘汰與評分（淘汰仍只看開價），也不可以出現在筆記匯出、分享摘要、結果卡、上傳包、剪貼簿、AI 提示詞。
+ * 值只有四種：上限待填、超過、待確認車位、在內。上限空白時一律顯示「上限待填」（不論開價有沒有填）；上限有值而開價不明時不顯示（回 null）。
+ */
+export const CAP_LABEL_TITLE = "是否在暫定上限內";
+export const CAP_LABEL_VALUES = ["上限待填", "超過", "待確認車位", "在內"];
+
+export function capCompareLabel(property, finance) {
+  if (capIsBlank(finance)) return "上限待填";
+  const cap = normalizeValue("finance", "budget_cap_total", finance?.budget_cap_total).value;
+  const ask = toFiniteNumber(property?.ask_total);
+  if (ask === null || ask <= 0) return null;
+  if (ask > cap) return "超過";
+  const hp = property?.has_parking;
+  const parkPrice = toFiniteNumber(property?.parking_price_ask);
+  const parkPing = toFiniteNumber(property?.parking_ping);
+  const hasYes = hp === true || hp === "有" || hp === "是" || parkPrice !== null || parkPing !== null;
+  const hasNo = hp === false || hp === "無" || hp === "否";
+  if (hasNo && !hasYes) return "在內";
+  if (!hasYes) return "待確認車位";
+  const inc = property?.parking_included_in_ask;
+  const incYes = inc === true || inc === "是" || inc === "含在開價";
+  const incNo = inc === false || inc === "否" || inc === "不含在開價";
+  if (incYes) return "在內";
+  if (!incNo) return "待確認車位";
+  if (parkPrice === null) return "待確認車位";
+  return ask + parkPrice > cap ? "超過" : "在內";
+}
+
+/** 畫面上的一行文字；沒有標籤（開價不明）就是空字串。 */
+export function capLabelLine(property, finance) {
+  const v = capCompareLabel(property, finance);
+  return v ? `${CAP_LABEL_TITLE}：${v}` : "";
+}
+
+/** 第 17 輪 F-R17-04：加分項（書房、可放一套健身器材的空間），只列「有」的。 */
+export const BONUS_LABELS = { has_study: "書房", gym_space: "健身空間" };
+export function bonusItems(property) {
+  return Object.entries(BONUS_LABELS).filter(([k]) => property?.[k] === "有").map(([, label]) => label);
+}
+export function bonusLine(property) {
+  const items = bonusItems(property);
+  return items.length ? `加分：${items.join("、")}` : "";
+}
+
+/** 候選排序：總分高的在前；同分時加分項多的排前面；再同就照代號。 */
+export function sortRankedByBonus(state, list) {
+  const propOf = (s) => (state?.properties || []).find((x) => x && x.id === (s?.property_id ?? s?.id));
+  return [...list].sort(
+    (a, b) => b.total - a.total || bonusItems(propOf(b)).length - bonusItems(propOf(a)).length || String(a.property_id ?? "").localeCompare(String(b.property_id ?? ""))
+  );
+}
+
 /** 比較頁：排名那一列的文字（總分、價格，加上另欄的自住適配）。 */
 export function compareRankedText(state, live) {
   const p = (state?.properties || []).find((x) => x && x.id === live?.property_id);
-  return `${live?.property_id}　總分 ${live?.total_display}　價格 ${live?.price?.display ?? ""}　${selfFitText(state?.travel, p?.area_code, { short: true })}`;
+  return [`${live?.property_id}　總分 ${live?.total_display}　價格 ${live?.price?.display ?? ""}　${selfFitText(state?.travel, p?.area_code, { short: true })}`, capLabelLine(p, state?.finance), bonusLine(p)].filter(Boolean).join("　");
 }
 
 export function comparableForView(live) {

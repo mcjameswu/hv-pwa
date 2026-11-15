@@ -4,7 +4,7 @@ import { splitList, joinList } from "./js/lists.js";
 import { diffDataset } from "./js/merge.js";
 import { readImportFiles } from "./js/import-file.js";
 import { UNKNOWN_FILE_MESSAGE, prefillHint } from "./js/notes-import.js";
-import { scoreProperty, priceDropToCapReminder, propertiesForAgentDraft, isStretchProperty, assessPropertyFromState, latestAnswerClearsVeto, orderedViewings, mergedEvidenceFor } from "./js/scoring.js";
+import { sizeCheck, parseAreaLower, scoreProperty, priceDropToCapReminder, propertiesForAgentDraft, isStretchProperty, assessPropertyFromState, latestAnswerClearsVeto, orderedViewings, mergedEvidenceFor } from "./js/scoring.js";
 import { runAffordability, DOWN_PENDING } from "./js/affordability.js";
 import { scanDraft, whitelistUploadPack } from "./js/scanner.js";
 import { prepareOutbound, isUploadablePhoto, writeClipboard, downloadOutbound, displayDiffChanges, downloadBackupJson, downloadZipBytes, deliverNotesFile, deliverResultCard, createPreviewUrl, systemPartnerText } from "./js/egress.js";
@@ -48,7 +48,7 @@ import { APP_VERSION, DEFAULT_SCORING, CONDITION_KEYS, CONDITION_LABELS, FIELD_L
 import { el, mount } from "./js/dom.js";
 import { applyThresholdChange, parseThresholdNumber, fieldLabel } from "./js/thresholds.js";
 import { isFlagOn, SCREEN_BINDINGS } from "./js/fields.js";
-import { collectNumericForm, settingsPatchFromForm, scoreLineText, scoreBreakdownText, sheetRowsToCsvText, trustLabel, weekOf, hasOfferFlag, onsiteQuickItems, isRevealed, nextReveal, slotTrialResult, visitFormModel, bannerModel, afterCommand, noticesFromResult, backupDiffSummary, exportDoneMessage, numberHint, propertySelfFitLine, compareRankedText, affordLines, makeVisitDraftSaver, isStaleFieldView, afterReload } from "./js/ui-logic.js";
+import { capLabelLine, bonusLine, sortRankedByBonus, collectNumericForm, settingsPatchFromForm, scoreLineText, scoreBreakdownText, sheetRowsToCsvText, trustLabel, weekOf, hasOfferFlag, onsiteQuickItems, isRevealed, nextReveal, slotTrialResult, visitFormModel, bannerModel, afterCommand, noticesFromResult, backupDiffSummary, exportDoneMessage, numberHint, propertySelfFitLine, compareRankedText, affordLines, makeVisitDraftSaver, isStaleFieldView, afterReload } from "./js/ui-logic.js";
 import { rankEligible } from "./js/rank-eligible.js";
 import { applyGatedThresholdChange } from "./js/validate.js";
 import { createController } from "./js/controller.js";
@@ -774,6 +774,15 @@ function moreStart() {
   ]);
 }
 
+/** 第 17 輪：物件卡底下的小字（上限比對標籤、加分項、實際建坪提醒）；沒有就不畫。 */
+function rowExtras(r, { withSize = false } = {}) {
+  return [
+    r.capLabel ? el("span", { class: "meta cap-label", "data-cap-label": "1", text: r.capLabel }) : null,
+    r.bonus ? el("span", { class: "meta bonus", "data-bonus": "1", text: r.bonus }) : null,
+    withSize && r.sizeAlert ? el("span", { class: "meta size-alert", "data-size-alert": "1", text: r.sizeAlert }) : null
+  ].filter(Boolean);
+}
+
 function pageHome() {
   const week = currentWeek();
   const model = homeModel(state, { week });
@@ -785,7 +794,8 @@ function pageHome() {
     const b = el("button", { type: "button", class: "prop-row", "data-property": r.id }, [
       el("strong", { text: rowLabel(r) }),
       r.memoryNote ? el("span", { class: "meta memo", text: memoryLine(r.memoryNote) }) : null,
-      el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") })
+      el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") }),
+      ...rowExtras(r)
     ]);
     b.onclick = () => beginViewing(r.id);
     return b;
@@ -972,7 +982,8 @@ function visitSelectStep() {
     const b = el("button", { type: "button", class: `prop-row${ui.visit.selectedId === r.id ? " on" : ""}`, "data-property": r.id }, [
       el("strong", { text: rowLabel(r) }),
       r.memoryNote ? el("span", { class: "meta memo", text: memoryLine(r.memoryNote) }) : null,
-      el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") })
+      el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") }),
+      ...rowExtras(r)
     ]);
     b.onclick = () => {
       ui.visit.selectedId = r.id;
@@ -1947,6 +1958,8 @@ function pageField() {
       ]),
       input("ppark", "車位開價（萬）", { inputmode: "decimal" }),
       input("pparkping", "車位坪", { inputmode: "decimal" }),
+      bonusSelect("pstudy", "書房（加分）"),
+      bonusSelect("pgym", "可放一套健身器材的空間（加分）"),
       el("h3", { text: "屋況 7 類快選" }),
       ...CONDITION_KEYS.map((k) =>
         el("label", { text: CONDITION_LABELS[k] }, [
@@ -1982,6 +1995,8 @@ function pageField() {
     else if (prop.parking_included_in_ask === true || prop.parking_included_in_ask === "是") $("#pparkin").value = "是";
     if (prop.parking_price_ask != null) $("#ppark").value = prop.parking_price_ask;
     if (prop.parking_ping != null) $("#pparkping").value = prop.parking_ping;
+    if (prop.has_study) $("#pstudy").value = prop.has_study;
+    if (prop.gym_space) $("#pgym").value = prop.gym_space;
     for (const k of CONDITION_KEYS) {
       if (prop.condition?.[k]) $(`#cond-${k}`).value = prop.condition[k];
     }
@@ -2007,6 +2022,8 @@ function pageField() {
       ...nums.patch,
       has_parking: $("#phaspark").value === "有" ? true : $("#phaspark").value === "無" ? false : null,
       parking_included_in_ask: $("#pparkin").value === "否" ? false : $("#pparkin").value === "是" ? true : null,
+      has_study: $("#pstudy").value || null,
+      gym_space: $("#pgym").value || null,
       condition: Object.fromEntries(CONDITION_KEYS.map((k) => [k, $(`#cond-${k}`).value || null]))
     }));
     if (!r.ok) return;
@@ -2263,11 +2280,22 @@ function pageSheet() {
 }
 
 /** 這間物件還沒問到的「要問仲介」清單（問到填了就消失）：看房第 1 站與問價紀錄頁頂端顯示。 */
+const SIZE_ASK_TEXT = "請問實際建坪(扣掉公設與車位後的室內坪數)是多少?公設比是多少?";
+
 function askListCard(propertyId) {
   const p = state.properties.find((x) => x.id === propertyId);
   const keys = Array.isArray(p?.agent_questions) ? p.agent_questions : [];
   const open = keys.filter((k) => ASK_QUESTIONS[k] && (p[k] === undefined || p[k] === null || p[k] === ""));
-  if (!open.length) return null;
+  // 第 17 輪 F-R17-03：大樓這類公設比不明的，實際建坪待核，列進待問清單
+  const sizeAsk = p && sizeCheck(p, state.profile).status === "public_unknown" ? SIZE_ASK_TEXT : null;
+  if (!open.length && !sizeAsk) return null;
+  // 沒有其他待問題目時，實際建坪這一題自己一張卡（id 不同於 #askList，原本「問到填了就消失」的判斷不受影響）
+  if (!open.length) {
+    return el("div", { class: "card ask-card", id: "askSizeCard" }, [
+      el("h3", { text: "要問仲介的問題" }),
+      el("div", { class: "check-item", "data-ask-computed": "actual_size" }, [el("span", { text: sizeAsk })])
+    ]);
+  }
   return el("div", { class: "card ask-card", id: "askList" }, [
     el("h3", { text: "要問仲介的問題" }),
     ...open.map((k) => {
@@ -2277,7 +2305,8 @@ function askListCard(propertyId) {
         location.hash = `#property/detail/${encodeURIComponent(propertyId)}`;
       };
       return el("div", { class: "check-item", "data-ask-item": k }, [el("span", { text: ASK_QUESTIONS[k] }), go]);
-    })
+    }),
+    sizeAsk ? el("div", { class: "check-item", "data-ask-computed": "actual_size" }, [el("span", { text: sizeAsk })]) : null
   ]);
 }
 
@@ -2304,7 +2333,8 @@ function pagePropertyList() {
     const b = el("button", { type: "button", class: "prop-row", "data-property": r.id }, [
       el("strong", { text: rowLabel(r) }),
       r.memoryNote ? el("span", { class: "meta memo", text: memoryLine(r.memoryNote) }) : null,
-      el("span", { class: "meta", text: `區域 ${r.area || "未填"}　狀態 ${r.status}　分數 ${r.score}　${r.counted ? "已計入" : "未計入"}　詳細 ›` })
+      el("span", { class: "meta", text: `區域 ${r.area || "未填"}　狀態 ${r.status}　分數 ${r.score}　${r.counted ? "已計入" : "未計入"}　詳細 ›` }),
+      ...rowExtras(r, { withSize: true })
     ]);
     b.onclick = () => {
       location.hash = `#property/detail/${encodeURIComponent(r.id)}`;
@@ -2340,6 +2370,10 @@ function pagePropertyDetail(id) {
       el("p", { text: `狀態 ${propertyStatus(state, prop, live)}　評分：${scoreLineText(live)}${alerts ? `　提醒：${alerts}` : ""}` }),
       scoreBreakdownText(live) ? el("p", { class: "hint", text: `評分來源：${scoreBreakdownText(live)}` }) : null,
       el("p", { class: "hint", text: propertySelfFitLine(state, prop) }),
+      capLabelLine(prop, state.finance) ? el("p", { class: "hint", id: "capLabelLine", text: capLabelLine(prop, state.finance) }) : null,
+      bonusLine(prop) ? el("p", { class: "hint", id: "bonusLine", text: bonusLine(prop) }) : null,
+      sizeCheck(prop, state.profile).alert ? el("p", { class: "hint", id: "sizeAlertLine", text: sizeCheck(prop, state.profile).alert }) : null,
+      sizeCheck(prop, state.profile).explain ? el("p", { class: "hint", id: "sizeExplainLine", text: sizeCheck(prop, state.profile).explain }) : null,
       el("button", { type: "button", id: "detailVisit", text: latest && !isFlagOn(latest.post_saved) ? "繼續看這間" : "開始看這間" }),
       el("a", { class: "btn", id: "detailPriceLog", href: `#price_log/${encodeURIComponent(id)}`, text: "問價紀錄" }),
       latest ? el("button", { type: "button", id: "openField", text: "開啟現場頁（進階）" }) : null
@@ -2351,7 +2385,9 @@ function pagePropertyDetail(id) {
       input("pask", "開價（萬）", { inputmode: "decimal" }),
       input("pping", "登記總坪", { inputmode: "decimal" }),
       input("prooms", "房數", { inputmode: "numeric" }),
-      input("ptype", "產品類型", { placeholder: "大樓" })
+      input("ptype", "產品類型", { placeholder: "大樓" }),
+      bonusSelect("pstudy", "書房（加分）"),
+      bonusSelect("pgym", "可放一套健身器材的空間（加分）")
     ]),
     el("details", { class: "fold", id: "moreFold" }, [
       el("summary", { text: "更多欄位" }),
@@ -2468,6 +2504,13 @@ function pagePropertyDetail(id) {
   });
 }
 
+/** 第 17 輪：加分項的下拉（未填、有、無、未知）。 */
+function bonusSelect(id, label) {
+  return el("label", { text: label }, [
+    el("select", { id }, [el("option", { value: "", text: "未填" }), el("option", { value: "有", text: "有" }), el("option", { value: "無", text: "無" }), el("option", { value: "未知", text: "未知" })])
+  ]);
+}
+
 function fillPropForm(p) {
   if (!p) return;
   const set = (id, v) => {
@@ -2485,6 +2528,8 @@ function fillPropForm(p) {
   set("#pmemo", p.memory_note);
   set("#pfloor", p.floor_note);
   set("#ptype", p.product_type);
+  set("#pstudy", p.has_study);
+  set("#pgym", p.gym_space);
   set("#pwalkmin", p.walk_min);
   set("#phold", p.hold_years);
   set("#pcommute", p.commute_min);
@@ -2571,6 +2616,8 @@ function readPropForm() {
       id: ($("#pcode")?.value || "").trim(),
       area_code: $("#parea")?.value || null,
       product_type: $("#ptype")?.value || null,
+      has_study: $("#pstudy")?.value || null,
+      gym_space: $("#pgym")?.value || null,
       transit_status: $("#ptransit")?.value || null,
       walk_mode: $("#pwalkmode")?.value || null,
       school_zone_claimed: $("#pschool")?.value || null,
@@ -3226,7 +3273,7 @@ function releaseVetoRows(s) {
 
 function pageCompare() {
   const live = (state.properties || []).map((p) => assessPropertyFromState(state, p.id)).filter((s) => s.ok);
-  const ranked = live.filter((s) => rankEligible(s)).sort((a, b) => b.total - a.total);
+  const ranked = sortRankedByBonus(state, live.filter((s) => rankEligible(s)));
   const pending = live.filter((s) => s.decision === "待核" || s.decision === "待重評");
   const anyStale = live.some((s) => s.stale);
   const watch = live.filter((s) => s.watch_only || s.action === "觀察");
@@ -3539,6 +3586,13 @@ function moreProgress() {
   ]);
 }
 
+/** 第 17 輪 F-R17-05：把一個清單欄位拆成一項一行；空的顯示「未填」。 */
+function profileItems(value, cls) {
+  const items = splitList(value);
+  if (!items.length) return [el("p", { class: "hint", text: "未填" })];
+  return items.map((t) => el("p", { class: cls, text: t }));
+}
+
 function moreProfile() {
   mount(appEl, [
     backLink(),
@@ -3548,6 +3602,15 @@ function moreProfile() {
       el("p", { text: `最少房數：${state.profile.rooms_min || "未填"}　偏好：${state.profile.rooms_preferred || "未填"}` }),
       el("p", { text: `一票否決：${state.profile.deal_breaker || "未填"}` }),
       el("p", { class: "hint", text: "看房後回寫須你確認才寫入，不會自動改。" })
+    ]),
+    el("div", { class: "card", id: "profileMust" }, [
+      el("h3", { text: "必要（沒有就不考慮）" }),
+      ...profileItems(state.profile.must_have, "profileMustItem"),
+      parseAreaLower(state.profile.area_range) !== null ? el("p", { id: "profileSizeNeed", text: `實際建坪 ${parseAreaLower(state.profile.area_range)} 坪以上` }) : null
+    ]),
+    el("div", { class: "card", id: "profileBonus" }, [
+      el("h3", { text: "加分（有更好，沒有也不淘汰）" }),
+      ...profileItems(state.profile.amenities, "profileBonusItem")
     ])
   ]);
 }

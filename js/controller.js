@@ -578,6 +578,13 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
       if (b.state === "invalid") errors.push({ field: "baths", message: b.error });
       else out.baths = b.state === "ok" ? b.value : null;
     }
+    // 第 17 輪 F-R17-04：加分欄（書房、健身空間），只記錄、不進評分指紋；空白清成 null
+    for (const k of ["has_study", "gym_space"]) {
+      if (!(k in fields) || (only && !only.has(k))) continue;
+      const t = normalizeValue("properties", k, fields[k]);
+      if (t.state === "invalid") errors.push({ field: k, message: t.error });
+      else out[k] = t.state === "ok" ? t.value : null;
+    }
     // 第 16 輪：同樣只記錄、不放進評分指紋的文字欄位（記憶備註、現場帶看單帶來的樓層、仲介、來源備註），逐欄驗證（含個資掃描與長度）
     for (const k of EXTRA_PROPERTY_TEXT_KEYS) {
       if (!(k in fields) || (only && !only.has(k))) continue;

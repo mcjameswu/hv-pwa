@@ -6,9 +6,9 @@
 import { isFlagOn, toFiniteNumber } from "./fields.js";
 import { itemsForViewing, displayItem } from "./items-for-viewing.js";
 import { responseValue, uniqueCounted, countViewing } from "./counting.js";
-import { assessPropertyFromState, orderedViewings } from "./scoring.js";
+import { assessPropertyFromState, orderedViewings, sizeCheck } from "./scoring.js";
 import { propertyStatus } from "./notes-export.js";
-import { scoreLineText } from "./ui-logic.js";
+import { scoreLineText, capLabelLine, bonusLine } from "./ui-logic.js";
 import { coachModel } from "./coach.js";
 
 /** 底部導覽只有四個分頁。 */
@@ -221,7 +221,11 @@ export function propertyRows(state) {
         score: scoreLineText(live),
         counted: countedView,
         plannedDate: p.planned_date || "",
-        fromNotes: p.from_notes === true
+        fromNotes: p.from_notes === true,
+        // 第 17 輪：上限比對標籤（F-R17-01，只在本機畫面）、加分項（F-R17-04）、實際建坪提醒（F-R17-03）
+        capLabel: capLabelLine(p, state.finance),
+        bonus: bonusLine(p),
+        sizeAlert: sizeCheck(p, state.profile).alert || ""
       };
     });
 }
