@@ -53,11 +53,13 @@ import { applyGatedThresholdChange } from "./js/validate.js";
 import { createController } from "./js/controller.js";
 import { displayItem, packChecklist } from "./js/items-for-viewing.js";
 import { propertyStatus } from "./js/notes-export.js";
+import { onboardingModel, TRIAL_ROUTE } from "./js/onboarding.js";
 import {
   resolveRoute,
   VISIT_STEPS,
   homeModel,
   propertyRows,
+  rowLabel,
   phaseProgress,
   groupByCategory,
   resultSummary,
@@ -68,7 +70,7 @@ import {
 } from "./js/ui-flow.js";
 import { financeTrust } from "./js/finance-trust.js";
 import { stagesInfo, normalizeCoach, currentStageOf, nextStepOf, stageProgress, parseLink, stepsForVisitStep, localDate, stageMinutes, visitStepMinutes, timerView } from "./js/coach.js";
-import { routeStations, resolveStations, stationIndexForItem, stationItems, stationImpact, responseKeyOf, answered, optionsOf, isProblemValue, missingItems, missingLine, prefillOrigins, prefillFor, unassignedOptional, CATCH_ALL_KEY } from "./js/sites.js";
+import { routeStations, resolveStations, stationIndexForItem, stationItems, stationImpact, responseKeyOf, answered, optionsOf, isProblemValue, missingItems, missingLine, prefillOrigins, prefillFor, unassignedOnsite, CATCH_ALL_KEY } from "./js/sites.js";
 import { priceLogFor, priceLogLine, PRICE_LOG_KINDS } from "./js/price-log.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -94,6 +96,7 @@ const ui = {
   timer: null, // 階段頁的計時器 { key, startedAt }（只在本機計時，不連網）
   timerHandle: null,
   stationMsg: "", // 「這站都正常」之後要顯示的一句話
+  installEvent: null, // 瀏覽器送來的「可以安裝」事件（beforeinstallprompt）；沒有就只顯示文字做法
   coachArrival: null, // 按首頁「照著做」進階段頁時，要展開「怎麼做」的步驟代號（只用一次）
   focusAfterRender: null, // 換頁後要把游標放到哪個輸入框（首頁紅色提示用）
   lastHash: null, // 上一次畫的網址：網址換了（換頁或換步驟）就把畫面捲回最上面
@@ -302,6 +305,16 @@ async function boot() {
       await runCommand(() => ctrl.loadMethodPack(shipped));
     }
   }
+  // 瀏覽器說「可以安裝」時留著那個事件，上手卡才出現「安裝到主畫面」按鈕；iPhone 沒有這個事件，只顯示文字做法
+  window.addEventListener("beforeinstallprompt", (ev) => {
+    try {
+      ev.preventDefault?.();
+    } catch {
+      // 忽略
+    }
+    ui.installEvent = ev;
+    if ((location.hash || "#home") === "#home") render();
+  });
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("hashchange", render);
   render();
@@ -449,6 +462,8 @@ function render() {
     ui.focusAfterRender = null;
     // 題目如果收在摺疊區裡，先把摺疊區打開才看得到
     for (let n = target?.parentElement; n; n = n.parentElement) if (n.tagName === "DETAILS") n.open = true;
+    if (target && !target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1"); // 一般區塊要有 tabindex 才接得住游標
+    target?.classList?.add("focus-hit"); // 標亮：讓人看得出是被帶到的那一題
     target?.focus();
     target?.scrollIntoView?.({ block: "center" });
   } else if (wantTop && typeof globalThis.scrollTo === "function") {
@@ -558,6 +573,140 @@ async function beginViewing(propertyId) {
   return r;
 }
 
+// ---------------------------------------------------------------------------
+// 第 15 輪 F-R15-11、F-R15-12：「開始使用」上手卡（首頁）與「上手步驟」頁（更多）共用同一個判斷（onboardingModel）
+// ---------------------------------------------------------------------------
+
+/** 是不是從主畫面開啟的（兩種判斷都不存在時當沒有，不得出錯）。 */
+function isStandaloneNow() {
+  try {
+    if (typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches) return true;
+  } catch {
+    // 不支援就當沒有
+  }
+  try {
+    return typeof navigator !== "undefined" && navigator.standalone === true;
+  } catch {
+    return false;
+  }
+}
+
+function onboardingNow() {
+  return onboardingModel(state, { standalone: isStandaloneNow(), canInstall: Boolean(ui.installEvent) });
+}
+
+async function setOnboarding(flag, value = true) {
+  const r = await runCommand(() => ctrl.setOnboardingFlag(flag, value), { keepNotices: true });
+  if (r?.ok) render();
+  return r;
+}
+
+/** 上手步驟的清單；full 為真是「更多」裡的完整頁（每一步都展開），否則是首頁的精簡卡（只有目前這步展開）。 */
+function onboardingSteps(m, { full }) {
+  return m.steps.map((st) => {
+    const open = full || st.current;
+    const mark = st.done ? "✓" : st.current ? "▶" : "○";
+    const stateName = st.done ? "done" : st.current ? "current" : "todo";
+    const kids = [
+      el("p", { class: "onb-line" }, [
+        el("span", { class: "onb-mark", text: mark }),
+        el("strong", { class: "onb-title", text: `${st.n}. ${st.title}` }),
+        el("span", { class: "tag", text: st.done ? "已完成" : st.current ? "目前這步" : "還沒到" })
+      ])
+    ];
+    if (!st.done) {
+      const btns = [];
+      if (open) kids.push(el("p", { class: "hint onb-how", text: st.how }));
+      if (st.id === "pwa") {
+        if (m.canInstall) {
+          const b = el("button", { type: "button", class: "primary", id: "onbInstall", text: "安裝到主畫面" });
+          b.onclick = async () => {
+            const ev = ui.installEvent;
+            if (!ev || typeof ev.prompt !== "function") return;
+            ui.installEvent = null;
+            try {
+              await ev.prompt();
+            } catch {
+              // 使用者關掉視窗也不算錯
+            }
+            render();
+          };
+          btns.push(b);
+        }
+        const done = el("button", { type: "button", id: "onbPwaDone", text: "我已經加好了" });
+        done.onclick = () => setOnboarding("pwa_done");
+        btns.push(done);
+      } else if (st.id === "import" || st.id === "pack") {
+        const go = el("button", { type: "button", class: st.current ? "primary" : "", "data-onb-go": st.id, text: "去「從筆記匯入」" });
+        go.onclick = () => {
+          location.hash = "#more/import";
+        };
+        btns.push(go);
+        if (st.id === "pack") {
+          const builtin = el("button", { type: "button", id: "onbBuiltin", text: "先用內建通用版" });
+          builtin.onclick = () => setOnboarding("builtin_pack");
+          btns.push(builtin);
+        }
+      } else if (st.id === "cap") {
+        const go = el("button", { type: "button", class: st.current ? "primary" : "", id: "onbCap", text: "去填可承受上限" });
+        go.onclick = () => {
+          ui.focusAfterRender = "b01";
+          location.hash = "#more/settings";
+        };
+        btns.push(go);
+      } else if (st.id === "trial") {
+        const go = el("button", { type: "button", class: st.current ? "primary" : "", id: "onbTrialGo", text: "照著做" });
+        go.onclick = () => {
+          location.hash = "#coach/1";
+        };
+        const tried = el("button", { type: "button", id: "onbTried", text: "我試過了" });
+        tried.onclick = () => setOnboarding("tried");
+        btns.push(go, tried);
+      }
+      if (open) kids.push(el("div", { class: "row onb-actions" }, btns));
+      else if (btns.length) kids.push(el("div", { class: "row onb-actions" }, btns));
+      if (st.id === "trial" && open) {
+        kids.push(el("details", { class: "fold", id: "onbTrial", open: true }, [el("summary", { text: "試走路線" }), el("ol", { class: "onb-route" }, TRIAL_ROUTE.map((t) => el("li", { text: t })))]));
+      }
+    }
+    return el("div", { class: `onb-step ${stateName}${st.current ? "" : " dim"}`, "data-onb": st.id, "data-state": stateName }, kids);
+  });
+}
+
+/** 首頁最上面的上手卡：5 步各有狀態與按鈕，5 步都完成變成一行「上手完成」加「收起」，任何時候都可以「先收起來」。 */
+function onboardingCard(m) {
+  if (m.allDone) {
+    const collapse = el("button", { type: "button", id: "onbCollapse", text: "收起" });
+    collapse.onclick = () => setOnboarding("collapsed");
+    return el("div", { class: "card onboarding-card", id: "onboardingCard" }, [el("p", { class: "onb-done", id: "onbTitle", text: m.title }), collapse]);
+  }
+  const collapse = el("button", { type: "button", id: "onbCollapse", text: "先收起來" });
+  collapse.onclick = () => setOnboarding("collapsed");
+  const more = el("a", { class: "hint", href: "#more/start", text: "看完整步驟" });
+  return el("div", { class: "card onboarding-card", id: "onboardingCard" }, [
+    el("h2", { id: "onbTitle", text: m.title }),
+    ...onboardingSteps(m, { full: false }),
+    el("div", { class: "row" }, [collapse, more])
+  ]);
+}
+
+/** 「更多」→「上手步驟」：完整 5 步（同上手卡的自動狀態）加試走路線全文；收起來的卡可以在這裡放回首頁。 */
+function moreStart() {
+  const m = onboardingNow();
+  const back = el("button", { type: "button", id: "onbRestore", text: "放回首頁" });
+  back.onclick = () => setOnboarding("collapsed", false);
+  mount(appEl, [
+    el("div", { class: "card", id: "startPage" }, [
+      el("h2", { text: "上手步驟" }),
+      el("p", { class: "progress-line", id: "onbTitle", text: m.title }),
+      el("p", { class: "hint", text: `已完成 ${m.doneCount}/${m.total} 步。狀態是從手機裡的資料自動看出來的，不用自己記。` }),
+      ...onboardingSteps(m, { full: true }),
+      el("details", { class: "fold", id: "onbRouteFull", open: true }, [el("summary", { text: "試走路線全文（約 10 分鐘）" }), el("ol", { class: "onb-route" }, TRIAL_ROUTE.map((t) => el("li", { text: t })))]),
+      m.collapsed ? back : null
+    ])
+  ]);
+}
+
 function pageHome() {
   const week = currentWeek();
   const model = homeModel(state, { week });
@@ -567,15 +716,18 @@ function pageHome() {
   const exportMsg = el("p", { class: "hint", id: "homeExportMsg" });
   const pendingRows = model.pending.map((r) => {
     const b = el("button", { type: "button", class: "prop-row", "data-property": r.id }, [
-      el("strong", { text: r.label }),
+      el("strong", { text: rowLabel(r) }),
       el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") })
     ]);
     b.onclick = () => beginViewing(r.id);
     return b;
   });
   const coach = model.coach?.enabled ? model.coach : null;
+  const onb = onboardingNow();
+  // 上手卡還在的時候，「可承受上限還沒填」紅卡不同時出現（上手卡第 4 步已經有按鈕）；上手卡收起後紅卡規則照舊
   mount(appEl, [
-    blank ? el("button", { type: "button", id: "capAlert", class: "alert-link", text: "可承受上限還沒填：點這裡直接去填（只有你自己看得到）" }) : null,
+    onb.visibleOnHome ? onboardingCard(onb) : null,
+    blank && !onb.visibleOnHome ? el("button", { type: "button", id: "capAlert", class: "alert-link", text: "可承受上限還沒填：點這裡直接去填（只有你自己看得到）" }) : null,
     // 口袋大叔：你現在在第幾階段、下一步做什麼、這間還要大約幾分鐘；R12 的三個大按鈕保留在下方
     coach
       ? el("div", { class: "card coach-card", id: "coachCard" }, [
@@ -708,7 +860,7 @@ function visitSelectStep() {
   const startBtn = el("button", { type: "button", class: "primary", id: "startViewing", text: "開始看這間", disabled: !ui.visit.selectedId });
   const rowNode = (r) => {
     const b = el("button", { type: "button", class: `prop-row${ui.visit.selectedId === r.id ? " on" : ""}`, "data-property": r.id }, [
-      el("strong", { text: r.label }),
+      el("strong", { text: rowLabel(r) }),
       el("span", { class: "meta", text: [r.area, r.status, r.plannedDate ? `預計 ${r.plannedDate}` : ""].filter(Boolean).join("　") })
     ]);
     b.onclick = () => {
@@ -1067,11 +1219,7 @@ function visitOnsiteStep(cur, route = {}) {
     ...(routed
       ? [
           ...routeOverviewCard(cur, defs),
-          el("p", { class: "hint", id: "photoCount", text: `這次已拍 ${(cur.photos || []).length} 張` }),
-          (() => {
-            const extra = unassignedOptional(items, defs, hiddenIds);
-            return extra.length ? el("details", { class: "fold", id: "extraOptional" }, [el("summary", { text: `其他（非必做）${extra.length} 題` }), ...extra.map((i) => choiceRow(i, cur.id))]) : null;
-          })()
+          el("p", { class: "hint", id: "photoCount", text: `這次已拍 ${(cur.photos || []).length} 張` })
         ]
       : [
           el("div", { class: "card" }, [
@@ -1094,6 +1242,15 @@ function visitOnsiteStep(cur, route = {}) {
       ]),
       el("p", { id: "sttMsg", class: "hint" })
     ]),
+    // F-R15-05：沒分到任何一站的現場題，統一放在站台總覽最下面「其他現場題」一區，可直接作答（寫入走原本的 setChecklistResponse）
+    ...(routed
+      ? [
+          (() => {
+            const extra = unassignedOnsite(items, defs, hiddenIds);
+            return extra.length ? el("details", { class: "fold", id: "extraOnsite" }, [el("summary", { text: `其他現場題（${extra.length} 題）` }), ...extra.map((i) => choiceRow(i, cur.id))]) : null;
+          })()
+        ]
+      : []),
     el("button", { type: "button", class: "fab", id: "photoBtn", text: "拍照" }),
     el("input", { id: "photoFile", type: "file", accept: "image/*", capture: "environment", class: "hidden" })
   ];
@@ -1771,7 +1928,7 @@ function pagePropertyList() {
   const rows = propertyRows(state);
   const nodes = rows.map((r) => {
     const b = el("button", { type: "button", class: "prop-row", "data-property": r.id }, [
-      el("strong", { text: r.label }),
+      el("strong", { text: rowLabel(r) }),
       el("span", { class: "meta", text: `區域 ${r.area || "未填"}　狀態 ${r.status}　分數 ${r.score}　${r.counted ? "已計入" : "未計入"}　詳細 ›` })
     ]);
     b.onclick = () => {
@@ -2811,12 +2968,14 @@ function pageMoreRoute(route) {
     backup: moreBackup,
     slots: moreSlots,
     profile: moreProfile,
-    export: moreExport
+    export: moreExport,
+    start: moreStart
   };
   (map[route.sub] || moreMenu)();
 }
 
 const MORE_MENU = [
+  ["start", "上手步驟", "五步開始使用，每一步做到哪一目了然"],
   ["import", "從筆記匯入", "把雲端硬碟「看房同步」資料夾裡的匯入檔讀進來"],
   ["settings", "設定", "可承受上限、計畫開始日、目標間數"],
   ["progress", "十週進度", "每個檢查點做到哪（預設收起）"],

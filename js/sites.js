@@ -6,7 +6,7 @@
  */
 import { toFiniteNumber } from "./fields.js";
 import { stagesInfo } from "./coach.js";
-import { responseValue, aggregateInstanceAnswers } from "./counting.js";
+import { responseValue, aggregateInstanceAnswers, DEFAULT_OPTIONS } from "./counting.js";
 
 // 同一題多間的合成規則放在 counting.js（計分也要用），這裡原樣再匯出，舊的呼叫端不用改。
 export { aggregateInstanceAnswers };
@@ -23,7 +23,7 @@ export const PROBLEM_WORDS = ["有問題", "嚴重"];
 /** 使用者自己加的題目預設的選項。 */
 export const DEFAULT_CUSTOM_OPTIONS = ["正常", "有問題", "待查"];
 /** 沒有選項的題目（勾選、拍照、錄音這類）預設的四個大按鈕。 */
-export const DEFAULT_OPTIONS = ["是", "否", "不適用", "待核"];
+export { DEFAULT_OPTIONS };
 
 /** 一票否決類的題目：答案可能讓整間物件被淘汰，所以「這站都正常」不能替使用者帶過，必須逐題按。 */
 export function isVetoItem(item) {
@@ -119,6 +119,16 @@ export function unassignedOptional(items, defs, hiddenIds = []) {
   const used = new Set(defs.flatMap((d) => d.itemIds));
   const hidden = new Set(hiddenIds);
   return (Array.isArray(items) ? items : []).filter((i) => i && i.phase === "現場" && i.core !== true && !used.has(i.id) && !hidden.has(i.id));
+}
+
+/**
+ * 第 15 輪 F-R15-05：沒有被任何一站收到的現場題（站台總覽最下面「其他現場題」一區列出，可直接作答）。
+ * 必做題本來會被收進「其他必做」那一站，所以這裡實際上是沒分站的選做題；仍然把必做題也算進來，避免日後規則改動時漏題。
+ */
+export function unassignedOnsite(items, defs, hiddenIds = []) {
+  const used = new Set((Array.isArray(defs) ? defs : []).flatMap((d) => d.itemIds));
+  const hidden = new Set(hiddenIds);
+  return (Array.isArray(items) ? items : []).filter((i) => i && i.phase === "現場" && !used.has(i.id) && (i.core === true || !hidden.has(i.id)));
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +240,7 @@ export function recomputeAggregates(responses, stations) {
     for (const item of st.def.items) {
       const recs = group.map((s) => out[`${item.id}@${s.key}`]);
       if (recs.every((r) => !responseValue(r).filled)) continue;
-      const agg = aggregateInstanceAnswers(recs);
+      const agg = aggregateInstanceAnswers(recs, item);
       if (agg) out[item.id] = agg;
       else delete out[item.id];
     }

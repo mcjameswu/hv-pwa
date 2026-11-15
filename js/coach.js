@@ -166,6 +166,19 @@ export function parseLink(raw, checklist = []) {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * 第 15 輪 F-R15-11：上手卡的手動標記（存在教練狀態裡，走單一寫入者 commit()）。
+ * pwa_done 我已經加好了、builtin_pack 先用內建通用版、tried 我試過了、collapsed 先收起來。
+ * 這些只留在手機：匯出到筆記的教練區段是逐欄整理的，不含這一欄（有測試守著）。
+ */
+export const ONBOARDING_FLAGS = ["pwa_done", "builtin_pack", "tried", "collapsed"];
+
+function normalizeOnboarding(raw) {
+  const out = {};
+  if (isObj(raw)) for (const k of ONBOARDING_FLAGS) if (raw[k] === true) out[k] = true;
+  return out;
+}
+
 function uniqueTexts(list) {
   return [...new Set((Array.isArray(list) ? list : []).filter(isText))];
 }
@@ -189,12 +202,15 @@ export function normalizeCoach(raw) {
   const custom = (Array.isArray(c.custom_items) ? c.custom_items : [])
     .filter((i) => isObj(i) && isText(i.id) && isText(i.text) && textList(i.options) && i.options.length >= 2)
     .map((i) => ({ id: i.id, text: i.text, options: [...i.options], step_id: isText(i.step_id) ? i.step_id : null }));
+  const onboarding = normalizeOnboarding(c.onboarding);
   return {
     current_stage: isText(c.current_stage) ? c.current_stage : null,
     steps_done: done,
     stage_notes: notes,
     custom_items: custom,
-    hidden_items: uniqueTexts(c.hidden_items)
+    hidden_items: uniqueTexts(c.hidden_items),
+    // 沒有任何標記時不多一個空欄位（舊資料與舊測試看到的形狀不變）
+    ...(Object.keys(onboarding).length ? { onboarding } : {})
   };
 }
 
@@ -219,7 +235,8 @@ export function mergeCoach(local, incoming) {
     steps_done: { ...b.steps_done, ...a.steps_done },
     stage_notes: unionById(a.stage_notes, b.stage_notes),
     custom_items: unionById(a.custom_items, b.custom_items),
-    hidden_items: uniqueTexts([...a.hidden_items, ...b.hidden_items])
+    hidden_items: uniqueTexts([...a.hidden_items, ...b.hidden_items]),
+    ...(Object.keys({ ...(a.onboarding || {}), ...(b.onboarding || {}) }).length ? { onboarding: { ...(b.onboarding || {}), ...(a.onboarding || {}) } } : {})
   };
 }
 

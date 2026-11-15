@@ -365,7 +365,13 @@ export function extractNormalizedRatios(text) {
   return out;
 }
 
-const MONEY_NEAR = /上限|收入|支出|月付|借款|持有成本|存款|可動用資金|流動資金|頭期|自備/;
+/**
+ * 緊鄰數字就當成金額的詞（掃描器的 MONEY_WORDS 與這裡共用這一份）。
+ * 第 15 輪 F-R15-02：補「月入」「月薪」「年薪」「年收」「年入」，所以「月入12」這種縮寫會被擋。
+ * 「月入」後面接「住」「帳」是日期用法（12 月入住、12 月入帳），不是收入，用負向預查排除，避免誤擋。
+ */
+export const MONEY_WORD_PATTERN = "收入|支出|月付|借款|持有成本|存款|可動用資金|流動資金|頭期|上限|月入(?![住帳])|月薪|年薪|年收|年入";
+const MONEY_NEAR = new RegExp(`${MONEY_WORD_PATTERN}|自備`);
 /** 數字前面緊貼的貨幣記號（NT$12,000,000、$600,000、新台幣 600,000）也算金額字詞（F-R11-01）。 */
 const CURRENCY_LEFT = /(?:NT\$|NTD|TWD|\$|＄|新台幣|新臺幣|台幣|臺幣)\s*$/i;
 

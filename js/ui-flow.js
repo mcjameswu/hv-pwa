@@ -20,7 +20,7 @@ export const NAV_PAGES = [
 ];
 
 /** 「更多」底下的小頁面。 */
-export const MORE_SECTIONS = ["import", "settings", "progress", "agency", "aff", "drafts", "backup", "slots", "profile", "export"];
+export const MORE_SECTIONS = ["import", "settings", "progress", "agency", "aff", "drafts", "backup", "slots", "profile", "export", "start"];
 
 export const VISIT_STEPS = [
   { n: 1, label: "選物件" },
@@ -151,6 +151,14 @@ export function groupByCategory(items) {
 /** 看房中的物件分到哪個步驟（沒有看房、或看房已存檔就是第 1 步；到一半的看房預設第 2 步）。 */
 export function defaultVisitStep(state) {
   return currentOpenViewing(state) ? 2 : 1;
+}
+
+/** 清單一列的名稱：有 label 就用，沒有（空白、undefined）就退回代號，不會出現空白或 undefined（第 15 輪 F-R15-07）。 */
+export function rowLabel(r) {
+  const label = typeof r?.label === "string" ? r.label.trim() : "";
+  if (label) return label;
+  const id = r?.id;
+  return id === undefined || id === null ? "" : String(id);
 }
 
 /** 物件清單一列要顯示的內容。 */

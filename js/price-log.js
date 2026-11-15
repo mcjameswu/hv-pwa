@@ -4,9 +4,19 @@
  * 紀錄只留在手機裡，不會自動出現在任何給仲介的草稿；要不要把某個數字寫進訊息，永遠由使用者自己打字決定。
  */
 import { PRICE_LOG_KINDS, parseNumericRaw } from "./fields.js";
-import { scanDraft } from "./scanner.js";
+import { scanDraft, PRIVATE_MONEY_FIELDS } from "./scanner.js";
 
 export { PRICE_LOG_KINDS };
+
+/**
+ * 第 15 輪 F-R15-03：問價金額拿來比對的私密欄位清單（單一來源是 scanner.js 的 PRIVATE_MONEY_FIELDS）。
+ * 清單內容：可承受上限 B01（budget_cap_total）、自備款（own_funds_down）、每月必要支出（essential_monthly）、
+ * 穩定月收入（stable_monthly_income）、分階段加價金額（staged_offer_steps，每一階各比一次）、可動用資金（liquid_funds_total）、
+ * 每月持有成本（holding_cost_monthly）、借款頭期每月負擔（borrowed_down_monthly）、借款頭期金額（borrowed_down_amount）。
+ * 比例（搜尋上緣、月付上限、成數、雜費）、年限、預備金月數、利率這類「不是金額」的欄位不比對：
+ * 它們是小整數或小數，跟問價金額（單位萬）湊巧相同的機率很高，拿來比對會誤擋正常的問價紀錄，而且它們的洩漏風險由文字規則另外管。
+ */
+export const PRICE_LOG_PRIVATE_FIELDS = PRIVATE_MONEY_FIELDS;
 
 /** 某間物件的問價紀錄，最新的在最上面（日期新的在前；同一天的，後記的在前）。 */
 export function priceLogFor(rows, propertyId) {

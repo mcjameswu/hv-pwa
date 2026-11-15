@@ -23,7 +23,7 @@ import { rankEligible } from "./rank-eligible.js";
 import { planNotesProperties, hasThresholdTables, hasNotesProperties, plainImportSummary, unknownAreaCodesOf } from "./notes-import.js";
 import { buildNotesPayload, notesFileName } from "./notes-export.js";
 import { scanPriceLogEntry, priceLogProblems, PRICE_LOG_AMOUNT_MESSAGE } from "./price-log.js";
-import { stagesInfo, normalizeCoach, mergeCoach, stageProgress, localDate } from "./coach.js";
+import { stagesInfo, normalizeCoach, mergeCoach, stageProgress, localDate, ONBOARDING_FLAGS } from "./coach.js";
 import { routeStations, buildSites, resolveStations, responseKeyOf, recomputeAggregates, normalFillPlan, stationItems, stationImpact, stationKeyOf, stationNameOf, MAX_INSTANCES, DEFAULT_CUSTOM_OPTIONS } from "./sites.js";
 import { splitStateToStores, NEVER_IN_SPLIT, hasContent } from "../db.js";
 
@@ -78,7 +78,8 @@ export const WRITE_COMMANDS = [
   "removeCustomItem",
   "setItemHidden",
   "markItemNotApplicable",
-  "markMissingPending"
+  "markMissingPending",
+  "setOnboardingFlag"
 ];
 
 export function emptyState() {
@@ -2219,6 +2220,25 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     });
   }
 
+  /**
+   * 第 15 輪 F-R15-11：上手卡的手動標記（我已經加好了、先用內建通用版、我試過了、先收起來）。
+   * 白話：這四個「資料看不出來」的事由使用者按一下標記；和其他寫入一樣走單一寫入者 command()，存在教練狀態裡，只留在手機，不進匯出。
+   */
+  async function setOnboardingFlag(flag, value = true) {
+    return command("setOnboardingFlag", async (draft) => {
+      if (!ONBOARDING_FLAGS.includes(flag)) return { ok: false, error: "不認得這個標記" };
+      const coach = normalizeCoach(draft.coach);
+      const flags = { ...(coach.onboarding || {}) };
+      if (value) flags[flag] = true;
+      else delete flags[flag];
+      const next = { ...coach };
+      delete next.onboarding;
+      if (Object.keys(flags).length) next.onboarding = flags;
+      draft.coach = next;
+      return { ok: true, flag, value: Boolean(value) };
+    });
+  }
+
   /** 勾選或取消勾選一個步驟；勾選時記下今天的日期（手機的本地日期）。步驟代號必須是目前方法包裡有的。 */
   async function setCoachStepDone(stepId, done = true) {
     return command("setCoachStepDone", async (draft) => {
@@ -2679,6 +2699,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     addViewing,
     confirmOnsiteFields,
     setCoachStage,
+    setOnboardingFlag,
     setCoachStepDone,
     completeCoachStage,
     addStageNote,

@@ -35,30 +35,58 @@ export function responseValue(resp) {
   return { filled: true, pending: false };
 }
 
-/** 同一題多間的答案，嚴重的排在前面，取最嚴重的那一間。 */
-const WORST_ORDER = ["嚴重", "有問題", "否", "不符合", "撐不住", "輕微", "部分符合", "勉強", "待核", "待查", "看不出來", "無問題", "正常", "符合", "是", "已查", "可撐"];
+/**
+ * 同一題多間的答案，嚴重的排在前面，取最嚴重的那一間。
+ * 第 15 輪 F-R15-01：「異常」和「有問題」同級（方法包可能用這個字）。
+ */
+const WORST_ORDER = ["嚴重", "有問題", "異常", "否", "不符合", "撐不住", "輕微", "部分符合", "勉強", "待核", "待查", "看不出來", "無問題", "正常", "符合", "是", "已查", "可撐"];
+
+/** 沒寫選項的勾選、拍照、錄音題，畫面預設的四個大按鈕（sites.js 與這裡共用同一份）。 */
+export const DEFAULT_OPTIONS = ["是", "否", "不適用", "待核"];
+
+/**
+ * 第 15 輪 F-R15-01：這一題是不是「選擇題」，是的話回傳它允許的選項清單；文字題與數字題回 null。
+ * 白話：選擇題的答案只能是按鈕上那幾個字；文字題與數字題本來就是自由填寫（量測數字、備註），
+ * 不能因為「看不懂」就當成待核，否則這類題目會永遠沒完成。
+ */
+export function choiceOptionsOf(item) {
+  if (!item) return null;
+  if (Array.isArray(item.options) && item.options.length) return item.options;
+  if (!item.input_type || ["check", "photo", "voice"].includes(item.input_type)) return DEFAULT_OPTIONS;
+  return null;
+}
 
 /**
  * 一題在好幾間（房間、浴室）各答一次之後，整題的答案：
  * 有任何一間沒答就整題算沒答；全部答了，取最嚴重的那一間；全部都標不適用，整題就是不適用。
+ * 第 15 輪 F-R15-01：第二個參數 item（題目定義，至少要有 options 與 input_type）可省略；
+ * 有給而且是選擇題時，「不在嚴重程度表、也不在這題選項清單裡」的答案算「看不懂」，那一間當成待核參與取最嚴重，
+ * 全部都看不懂時整題是待核並保留原字串（raw_value），絕不回「是」。文字題與數字題維持原行為：有填就算答了，值用分號串起來。
  */
-export function aggregateInstanceAnswers(recs) {
+export function aggregateInstanceAnswers(recs, item) {
   if (!recs.length || recs.some((r) => !responseValue(r).filled)) return null;
   const real = recs.filter((r) => !responseValue(r).na);
   if (!real.length) return { status: "不適用", value: "不適用", reason: String(recs.find((r) => r.reason)?.reason || "") };
   const values = real.map((r) => String(r.value ?? r.status ?? ""));
+  const choices = choiceOptionsOf(item);
+  const isUnknown = (v) => Boolean(choices) && v.trim() !== "" && !WORST_ORDER.includes(v) && !choices.includes(v);
+  const unknownValues = values.filter(isUnknown);
   let best = null;
   let bestRank = Infinity;
   for (const v of values) {
-    const rank = WORST_ORDER.indexOf(v);
+    const rank = isUnknown(v) ? WORST_ORDER.indexOf("待核") : WORST_ORDER.indexOf(v);
     if (rank >= 0 && rank < bestRank) {
-      best = v;
+      best = isUnknown(v) ? "待核" : v;
       bestRank = rank;
     }
   }
   if (best === null) {
     const joined = values.filter(Boolean).join("；");
     return { status: joined ? "是" : "待核", value: joined };
+  }
+  if (best === "待核" && unknownValues.length) {
+    // 看不懂的答案佔了最嚴重的位置：整題待核，保留看不懂的原字串，之後才查得到
+    return { status: "待核", value: "待核", raw_value: unknownValues.join("；") };
   }
   const worstRec = real.find((r) => String(r.value ?? r.status ?? "") === best);
   return { status: best, value: best, ...(worstRec?.note ? { note: worstRec.note } : {}) };
@@ -71,7 +99,7 @@ export function aggregateInstanceAnswers(recs) {
  * 所以新增一間沒答的浴室、改站名、換順序，都不會讓已經知道的嚴重答案消失。
  * 沒有任何一間答過時，回到原本整題那一格（舊版或進階現場頁寫的整題答案）。
  */
-export function evidenceRecord(responses, itemId) {
+export function evidenceRecord(responses, itemId, item) {
   const bag = responses || {};
   const prefix = `${itemId}@`;
   const answeredHere = Object.keys(bag)
@@ -81,7 +109,7 @@ export function evidenceRecord(responses, itemId) {
   if (!answeredHere.length) return bag[itemId];
   const whole = bag[itemId];
   const all = responseValue(whole).filled ? [...answeredHere, whole] : answeredHere;
-  return aggregateInstanceAnswers(all) || bag[itemId];
+  return aggregateInstanceAnswers(all, item) || bag[itemId];
 }
 
 /**

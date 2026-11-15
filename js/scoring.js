@@ -730,10 +730,12 @@ export function viewingAnswers(state, viewing) {
   for (const item of items) {
     let key = item.condition_key;
     if (!key && /漏水/.test(item.text || "")) key = "leak";
-    const rec = evidenceRecord(responses, item.id); // 證據：有任何一間答過就取已答各間最嚴重的（F-R14-01）
+    const rec = evidenceRecord(responses, item.id, item); // 證據：有任何一間答過就取已答各間最嚴重的（F-R14-01）
     const val = rec?.value ?? rec?.status;
     if (key) {
-      const label = normalizeCondition(val).value;
+      let label = normalizeCondition(val).value;
+      // 第 15 輪 F-R15-01：漏水題答「異常」「有問題」就是嚴重漏水，不能因為字不在屋況四個字裡就被忽略
+      if (!label && key === "leak" && (val === "異常" || val === "有問題")) label = "嚴重";
       if (label && (cond[key] === undefined || (SEVERITY[label] ?? 9) < (SEVERITY[cond[key]] ?? 9))) {
         cond[key] = label;
         condItem[key] = item.id;

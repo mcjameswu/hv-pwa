@@ -1,8 +1,14 @@
-import { amountWritings, intToChinese, extractNormalizedAmounts, sameWan, sameRatio, ratioWritings, extractNormalizedRatios } from "./chinese-num.js";
+import { MONEY_WORD_PATTERN, amountWritings, intToChinese, extractNormalizedAmounts, sameWan, sameRatio, ratioWritings, extractNormalizedRatios } from "./chinese-num.js";
 import { splitList } from "./lists.js";
 import { parseNumericRaw, parseAmountWan, parseNumberForKey } from "./fields.js";
 import { toHalfwidth } from "./pii.js";
 
+/**
+ * 私密金額欄位清單（B01 可承受上限加財務區的各個金額欄位）。
+ * 掃描器拿它比對文字裡的金額；問價紀錄的金額也用同一份清單比對（第 15 輪 F-R15-03），欄位增加時兩邊自動一起涵蓋。
+ * 比例、年限、月數這類不是金額的欄位不在清單裡：它們是小整數或小數（例如預備金 6 個月），
+ * 拿來比對問價金額會誤擋很多正常的紀錄，所以只在文字裡「緊鄰預備金、利率這類詞」時才由別的規則掃描。
+ */
 const MONEY_FIELDS = [
   "budget_cap_total",
   "own_funds_down",
@@ -15,8 +21,10 @@ const MONEY_FIELDS = [
   "borrowed_down_amount"
 ];
 
+export const PRIVATE_MONEY_FIELDS = MONEY_FIELDS;
+
 const MONEY_UNITS = "萬|元|千|万";
-const MONEY_WORDS = "收入|支出|月付|借款|持有成本|存款|可動用資金|流動資金|頭期|上限";
+const MONEY_WORDS = MONEY_WORD_PATTERN;
 
 const RATIO_MAP = {
   search_ratio_max: "比例|搜尋上緣",

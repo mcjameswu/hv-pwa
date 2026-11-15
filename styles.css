@@ -244,3 +244,15 @@ body.has-stepbar { padding-bottom: 188px; }
 .station-bar .station-pos { flex: 1; font-size: 1.05rem; }
 .station-bar .station-all { min-height: var(--tap); flex: 0 0 auto; }
 .station-chips.hidden { display: none; }
+
+.focus-hit { outline: 3px solid var(--brand); outline-offset: 2px; border-radius: 10px; }
+
+.onboarding-card { border: 2px solid var(--brand); }
+.onb-step { padding: 6px 0; border-top: 1px solid #e3e3e3; }
+.onb-step.dim { opacity: 0.55; }
+.onb-step.current { opacity: 1; background: #f1f7f3; border-radius: 10px; padding: 8px; }
+.onb-line { display: flex; gap: 6px; align-items: center; margin: 0; flex-wrap: wrap; }
+.onb-mark { font-weight: 700; min-width: 1.2em; }
+.onb-actions { gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.onb-route { margin: 4px 0 0 1.2em; padding: 0; }
+.onb-done { margin: 0 0 8px; font-weight: 700; }
