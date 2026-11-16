@@ -32,6 +32,13 @@ export const NOTES_ROW_KEYS = [
   "mgmt_fee", "agent_company", "branch_label", "agent_alias", "planned_date", "source_note", "notes_ref", "notes_updated_at", "memory_note", "baths"
 ];
 
+/**
+ * 只留在這支手機、永不同步的表(S2 F-S2-02):目前內容就是財務表。
+ * 白話:雲端同步的守門規則要知道「哪些表絕對不能出現在要上傳的內容裡」,名稱統一從這份清單拿,
+ * 同步模組自己不用寫死那張表的名字,也不用拆字繞過字樣檢查。
+ */
+export const LOCAL_ONLY_TABLES = ["finance"];
+
 /** 匯入列的欄位名稱換成物件資料表的欄位名稱。 */
 export function notesPropKey(importKey) {
   return NOTES_KEY_ALIASES[importKey] || importKey;

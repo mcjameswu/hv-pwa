@@ -28,6 +28,13 @@ import { scanPriceLogEntry, priceLogProblems, PRICE_LOG_AMOUNT_MESSAGE } from ".
 import { stagesInfo, normalizeCoach, mergeCoach, stageProgress, localDate, ONBOARDING_FLAGS } from "./coach.js";
 import { routeStations, buildSites, resolveStations, responseKeyOf, recomputeAggregates, normalFillPlan, stationItems, stationImpact, stationKeyOf, stationNameOf, MAX_INSTANCES, DEFAULT_CUSTOM_OPTIONS } from "./sites.js";
 import { splitStateToStores, NEVER_IN_SPLIT, hasContent } from "../db.js";
+// S1 同步接縫 開始
+import { deriveSyncKeys, slotWriteToken, tokenHash, generateSlotId, sealNotesPack, syncPassphraseStrength, SYNC_ROLES, SYNC_ENV_RE } from "./sync-crypto.js";
+import { call as syncCall } from "./sync-net.js";
+import { needUpload, validateDeskPayload, autoApplyDecision } from "./sync-engine.js";
+import { mergeWithCurrent } from "./csv.js";
+import { NOTES_KEY_ALIASES } from "./fields.js";
+// S1 同步接縫 結束
 
 export const WRITE_COMMANDS = [
   "addProperty",
@@ -299,7 +306,9 @@ const VISIT_DRAFT_KEYS = [
   "red_flags", "g1_partner_confirmed", "g1_partner_reason"
 ];
 
-export function createController({ db, now = () => Date.now(), idgen, testMode } = {}) {
+// S1 同步接縫 開始
+export function createController({ db, now = () => Date.now(), idgen, testMode, onCommitted } = {}) {
+// S1 同步接縫 結束
   if (!db) throw new Error("controller 需要資料庫");
   const inTest = testMode ?? Boolean(db && db._data !== undefined);
   let seq = 0;
@@ -408,6 +417,15 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
           return afterCommitFailure(err);
         }
         rev += 1;
+        // S1 同步接縫 開始
+        if (typeof onCommitted === "function") {
+          try {
+            onCommitted(name);
+          } catch {
+            /* 同步通知出錯不影響存檔 */
+          }
+        }
+        // S1 同步接縫 結束
       }
       committed = draft;
       committedSplit = nextSplit;
@@ -2731,6 +2749,262 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     });
   }
 
+  // S1 同步接縫 開始
+  // 雲端同步的六個指令與本機金鑰(F-S1-22)。本機資料放既有的 flags 資料表(一筆 id: "sync_local"),經單一寫入者 command() 排隊寫入;
+  // 密語與主金鑰算完就丟,不存、不進稽核紀錄。flags 不在 PERSISTED_KEYS 與備份表裡,所以金鑰不會出現在加密備份、匯出到筆記與分享摘要。
+  const SYNC_LOCAL_ID = "sync_local";
+  const SYNC_ROLE_LABELS = { owner: "我的手機", partner: "共同決策人的手機", desk: "電腦" };
+  const SYNC_UNSUPPORTED = "這個網址不支援自動同步。要用自動同步請改用另一個網址開啟 App;手動匯出匯入在這裡照常可用。";
+  // F-S2-05:網址上根本沒有同步服務(例如 GitHub Pages 的網址:health 回 404,或回的不是 JSON)時的白話說明;後半句保留原本的「不支援自動同步」說法
+  const SYNC_NO_SERVICE = "這個網址沒有雲端同步服務,要同步請改用 Cloudflare 網址開啟 App。這個網址不支援自動同步;手動匯出匯入在這裡照常可用。";
+  const SYNC_REJECT = "雲端內容不合規格,已拒絕";
+  const SYNC_ALIAS_REVERSE = Object.fromEntries(Object.entries(NOTES_KEY_ALIASES).map(([importKey, propKey]) => [propKey, importKey]));
+
+  async function syncReadLocal() {
+    try {
+      return (await db.get("flags", SYNC_LOCAL_ID)) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function syncPublic(rec) {
+    if (!rec) return { configured: false, enabled: false, pendingUpload: false };
+    return {
+      configured: true,
+      enabled: rec.enabled === true,
+      env: rec.env,
+      role: rec.role,
+      deviceLabel: rec.device_label,
+      pendingUpload: rec.pending_upload === true,
+      lastUploadAt: rec.last_upload_at || null,
+      lastDownloadAt: rec.last_download_at || null,
+      lastError: rec.last_error || null
+    };
+  }
+
+  /** 同步狀態(不含任何金鑰)。withKeys 只給同步執行器用,拿到連線需要的鑰匙與權杖。 */
+  async function syncStatus({ withKeys = false } = {}) {
+    return readQuery(async () => {
+      const rec = await syncReadLocal();
+      const out = { ok: true, ...syncPublic(rec) };
+      if (withKeys && rec) {
+        out.keys = { vault_id: rec.vault_id, access: rec.access, admin: rec.admin, enc: rec.enc, slot_id: rec.slot_id, write_token: rec.write_token };
+        out.local = { seen: { ...(rec.seen || {}) }, my_seq: rec.my_seq || 0, last_hash: rec.last_hash || null };
+      }
+      return out;
+    });
+  }
+
+  /** 改寫本機同步資料(內部用):mutate 回傳新內容、null(刪除)或 undefined(沒有變動就不提交)。 */
+  async function syncPutLocal(mutate) {
+    return command("syncPutLocal", async (draft, tx) => {
+      const cur = await syncReadLocal();
+      const next = mutate(cur ? { ...cur } : null);
+      if (next === undefined) return { ok: true, unchanged: true };
+      if (next === null) {
+        if (cur) tx.deletes.push({ store: "flags", id: SYNC_LOCAL_ID });
+        return { ok: true, removed: true };
+      }
+      tx.puts.push({ store: "flags", value: { ...next, id: SYNC_LOCAL_ID } });
+      return { ok: true };
+    });
+  }
+
+  function syncHttpMessage(r, where) {
+    if (r?.offline) return "連不上網路,請確認網路後再試";
+    if (r?.closed) return "這個保險箱已關閉(對方換了密語或刪除了雲端資料),請輸入新的密語";
+    if (r?.limited) return "試太多次了,請過 10 分鐘再試";
+    if (where === "create" && r?.status === 403) return "開通碼不對,或這個站的保險箱已經滿了";
+    if (where === "create" && r?.status === 409) return "這組密語的保險箱已經存在,請改按「加入既有的保險箱」";
+    if (where === "join" && r?.status === 404) return "找不到這個保險箱,請確認密語有沒有抄錯";
+    return "雲端暫時無法使用,請稍後再試";
+  }
+
+  /**
+   * 設定同步:mode 是 create(建立新的保險箱,要開通碼)或 join(加入既有的)。密語只用來算鑰匙,算完就丟。
+   * 設定成功回 { ok: true };失敗回白話原因。env 一律以伺服器 health 回報的為準。
+   */
+  async function syncSetup({ passphrase, mode = "create", enrollCode = "", role = "owner", replace = false } = {}) {
+    if (!SYNC_ROLES.includes(role)) return { ok: false, error: "角色只能選固定的三個選項" };
+    if (mode !== "create" && mode !== "join") return { ok: false, error: "請選建立新的保險箱,或加入既有的保險箱" };
+    const strength = syncPassphraseStrength(passphrase);
+    if (!strength.ok) return { ok: false, weak: true, error: strength.message };
+    if (!replace && (await syncReadLocal())) return { ok: false, error: "這支手機已經設定過雲端同步,請先退出同步,或用「換密語」" };
+    const health = await syncCall("GET", "health");
+    if (!health.ok || health.body?.ok !== true || typeof health.body.env !== "string" || !health.body.env) {
+      // 停在這裡:只送了這一次 health,之後不再送任何請求
+      const noService = !health.offline && (health.status === 404 || health.error === "not_json");
+      return { ok: false, unsupported: !health.offline, noService, error: health.offline ? syncHttpMessage(health, "health") : noService ? SYNC_NO_SERVICE : SYNC_UNSUPPORTED };
+    }
+    const env = health.body.env;
+    if (!SYNC_ENV_RE.test(env)) return { ok: false, unsupported: true, error: SYNC_UNSUPPORTED };
+    const keys = await deriveSyncKeys(passphrase, env);
+    if (mode === "create") {
+      const made = await syncCall("POST", "vaults", {
+        body: { vault_id: keys.vault_id, access_hash: await tokenHash(keys.access), admin_hash: await tokenHash(keys.admin), enroll_code: String(enrollCode ?? "") }
+      });
+      if (!made.ok) return { ok: false, error: syncHttpMessage(made, "create") };
+    } else {
+      const probe = await syncCall("GET", `vaults/${keys.vault_id}/slots`, { headers: { "X-Sync-Access": keys.access } });
+      if (!probe.ok) return { ok: false, error: syncHttpMessage(probe, "join") };
+    }
+    const slotId = generateSlotId();
+    const writeToken = await slotWriteToken(keys, slotId);
+    const rec = {
+      v: 1,
+      env,
+      enabled: true,
+      role,
+      device_label: SYNC_ROLE_LABELS[role],
+      vault_id: keys.vault_id,
+      access: keys.access,
+      admin: keys.admin,
+      enc: keys.enc,
+      slot_id: slotId,
+      write_token: writeToken,
+      seen: {},
+      my_seq: 0,
+      last_hash: null,
+      pending_upload: true,
+      last_upload_at: null,
+      last_download_at: null,
+      last_error: null,
+      created_at: new Date(now()).toISOString()
+    };
+    const written = await syncPutLocal(() => rec);
+    return written.ok === false ? written : { ok: true, role, env, mode };
+  }
+
+  /** 開啟或關閉同步(本機開關,立刻生效;關閉後這支手機完全不連網)。 */
+  async function syncSetEnabled(on) {
+    const st = await syncStatus();
+    if (!st.configured) return { ok: false, error: "還沒設定雲端同步" };
+    const want = on === true;
+    const r = await syncPutLocal((cur) => (cur && cur.enabled !== want ? { ...cur, enabled: want } : undefined));
+    return r.ok === false ? r : { ok: true, enabled: want };
+  }
+
+  /**
+   * 組出要上傳的信封。本體一定先呼叫 buildNotesExport(白名單組好、已過出口閘門的「給筆記」內容),再交給 sealNotesPack 加密;
+   * 沒過閘門就回 blocked,不加密、不交出任何內容。內容雜湊(不含 exported_at)沒變就回 skipped。
+   */
+  async function buildSyncUpload() {
+    const rec = await readQuery(() => syncReadLocal());
+    if (!rec || rec.ok === false) return { ok: false, notConfigured: true, error: "還沒設定雲端同步" };
+    const pack = await buildNotesExport();
+    if (!pack.ok) return { ...pack, ok: false, blocked: true };
+    let payload;
+    try {
+      payload = JSON.parse(pack.text);
+    } catch {
+      return { ok: false, error: "匯出內容無法讀取" };
+    }
+    const need = needUpload(payload, rec.last_hash);
+    if (!need.upload) return { ok: true, skipped: true, reason: "unchanged", hash: need.hash };
+    const seq = (rec.my_seq || 0) + 1;
+    const sealed = await sealNotesPack(pack, { env: rec.env, vault_id: rec.vault_id, slot_id: rec.slot_id, enc: rec.enc, seq, role: rec.role, device_label: rec.device_label, created_at: new Date(now()).toISOString() });
+    if (!sealed.ok) return { ok: false, error: "加密失敗,沒有上傳任何內容" };
+    return { ok: true, skipped: false, hash: need.hash, seq, envelope: sealed.envelope };
+  }
+
+  /** 同步執行器回報進度時寫回本機的欄位(只收白名單內的欄位與型別)。 */
+  async function syncRecord(patch = {}) {
+    return syncPutLocal((cur) => {
+      if (!cur) return undefined;
+      const next = { ...cur };
+      let changed = false;
+      const set = (k, v) => {
+        if (JSON.stringify(next[k]) !== JSON.stringify(v)) {
+          next[k] = v;
+          changed = true;
+        }
+      };
+      if (Number.isInteger(patch.my_seq) && patch.my_seq >= 0) set("my_seq", patch.my_seq);
+      if (typeof patch.last_hash === "string" && /^[0-9a-f]{64}$/.test(patch.last_hash)) set("last_hash", patch.last_hash);
+      if (typeof patch.pending_upload === "boolean") set("pending_upload", patch.pending_upload);
+      for (const k of ["last_upload_at", "last_download_at"]) if (typeof patch[k] === "string" && patch[k].length <= 40) set(k, patch[k]);
+      if (patch.last_error === null || (typeof patch.last_error === "string" && /^[a-z_]{1,24}$/.test(patch.last_error))) set("last_error", patch.last_error);
+      if (patch.seen && typeof patch.seen === "object") {
+        const seen = { ...(next.seen || {}) };
+        for (const [slot, seq] of Object.entries(patch.seen)) if (/^[A-Za-z0-9_-]{8,32}$/.test(slot) && Number.isInteger(seq) && seq >= 0) seen[slot] = seq;
+        set("seen", seen);
+      }
+      return changed ? next : undefined;
+    });
+  }
+
+  /**
+   * 套用電腦那一格的內容:驗證(只准待看物件與區域功課)→ 併入手機目前的資料 → 預覽 → 照 autoApplyDecision 決定 → 走和 confirmImport 一樣的寫入路徑。
+   * 含任何設定、財務或看不懂欄位的內容整份拒絕;區域行情有變要 opts.confirm;手機改過而電腦也改的欄位沒做決定(opts.choices)就先不動那幾欄。
+   */
+  async function applyDeskSync(payload, opts = {}) {
+    return command("applyDeskSync", async (draft, tx) => {
+      const v = validateDeskPayload(payload);
+      if (!v.ok) return { ok: false, rejected: true, error: SYNC_REJECT };
+      const rows = Array.isArray(payload.properties) ? payload.properties : [];
+      const known = new Set((draft.areas || []).map((a) => a && a.area_code));
+      const wantAreas = (Array.isArray(payload.areas) ? payload.areas : []).filter((a) => known.has(a.area_code));
+      const choices = opts.choices && typeof opts.choices === "object" ? opts.choices : {};
+      const first = planNotesProperties(draft.properties, rows, { choices });
+      const undecided = first.conflicts.filter((c) => choices[`${c.id}|${c.field}`] !== "notes" && choices[`${c.id}|${c.field}`] !== "phone");
+      const dropped = new Set(undecided.map((c) => `${c.id}|${SYNC_ALIAS_REVERSE[c.field] || c.field}`));
+      const useRows = dropped.size
+        ? rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !dropped.has(`${String(r.property_code).trim()}|${k}`))))
+        : rows;
+      const evaluate = (withAreas) => {
+        const partial = { schema_version: "import_v1", properties: useRows };
+        if (withAreas) partial.areas = wantAreas;
+        const data = withAreas ? mergeWithCurrent(partial, draft) : partial;
+        const preview = previewImport(data, getImportSchemaCached(), { notesChoices: choices });
+        return { data, decision: autoApplyDecision(preview) };
+      };
+      let useAreas = wantAreas.length > 0;
+      let ev = evaluate(useAreas);
+      // 區域功課套不上(例如手機的設定還沒匯入)就退回只套待看物件,不讓整份卡住
+      if (ev.decision.action === "reject" && useAreas && ev.decision.reasons.length === 1 && ev.decision.reasons[0] === "preview_failed") {
+        useAreas = false;
+        ev = evaluate(false);
+      }
+      if (ev.decision.action === "reject") return { ok: false, rejected: true, error: SYNC_REJECT, reasons: ev.decision.reasons };
+      const summary = {
+        needsDecision: undecided.length,
+        conflicts: undecided.map((c) => ({ id: c.id, field: c.field, label: c.label, phone: c.phone, notes: c.notes })),
+        areasSkipped: wantAreas.length > 0 && !useAreas
+      };
+      if (ev.decision.action === "confirm" && opts.confirm !== true) return { ok: true, applied: false, needsConfirm: true, ...summary };
+      const plan = planNotesProperties(draft.properties, useRows, { choices });
+      const result = useAreas ? await applyThresholdImport(draft, tx, ev.data, {}) : { ok: true, unchanged: true };
+      if (result?.ok === false) return { ok: false, rejected: true, error: SYNC_REJECT };
+      const areasChanged = result.unchanged !== true;
+      if (plan.changed) draft.properties = plan.next;
+      if (plan.changed || areasChanged) {
+        // 稽核只記筆數,不記任何欄位內容
+        draft.audit.push({ id: nid("au"), type: "desk_sync_apply", at: new Date(now()).toISOString(), created: plan.created.length, updated: plan.updated.length, conflicts: undecided.length, pending: plan.pending.length, areas: useAreas ? wantAreas.length : 0 });
+      }
+      return { ok: true, applied: plan.changed || areasChanged, created: plan.created.length, updated: plan.updated.length, pending: plan.pending.length, areas: useAreas ? wantAreas.length : 0, ...summary };
+    });
+  }
+
+  /** 這支手機退出同步:刪掉雲端那一格(wipeCloud 為真時刪整個保險箱,要管理權杖),再刪掉本機存的金鑰。雲端連不上也照樣清掉本機的。 */
+  async function syncLeave({ wipeCloud = false } = {}) {
+    const rec = await readQuery(() => syncReadLocal());
+    if (!rec || rec.ok === false) return { ok: true, left: false };
+    let cloud = { attempted: false, ok: false };
+    try {
+      const base = { "X-Sync-Access": rec.access };
+      const r = wipeCloud
+        ? await syncCall("DELETE", `vaults/${rec.vault_id}`, { headers: { ...base, "X-Sync-Admin": rec.admin } })
+        : await syncCall("DELETE", `vaults/${rec.vault_id}/slots/${rec.slot_id}`, { headers: { ...base, "X-Sync-Write": rec.write_token } });
+      cloud = { attempted: true, ok: r.ok === true || r.status === 404 || r.status === 410 };
+    } catch {
+      cloud = { attempted: true, ok: false };
+    }
+    const written = await syncPutLocal(() => null);
+    return written.ok === false ? written : { ok: true, left: true, cloud };
+  }
+  // S1 同步接縫 結束
+
   const api = {
     getState: () => viewState(),
     getLoadStatus: () => loadStatus,
@@ -2813,7 +3087,16 @@ export function createController({ db, now = () => Date.now(), idgen, testMode }
     removeCustomItem,
     setItemHidden,
     markItemNotApplicable,
-    markMissingPending
+    markMissingPending,
+    // S1 同步接縫 開始
+    syncStatus,
+    syncSetup,
+    syncSetEnabled,
+    buildSyncUpload,
+    applyDeskSync,
+    syncLeave,
+    syncRecord
+    // S1 同步接縫 結束
   };
   if (inTest) api.seedForTest = seedForTest;
   return api;

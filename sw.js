@@ -1,4 +1,4 @@
-const CACHE = "house-app-v1.20.2";
+const CACHE = "house-app-v1.21.0";
 const ASSETS = [
   "./",
   "./index.html",
@@ -53,7 +53,13 @@ const ASSETS = [
   "./js/sheet-parse.js",
   "./js/result-card.js",
   "./js/price-log.js",
-  "./js/sites.js"
+  "./js/sites.js",
+  // S1 同步接縫 開始
+  "./js/sync-crypto.js",
+  "./js/sync-net.js",
+  "./js/sync-engine.js",
+  "./js/sync-ui.js"
+  // S1 同步接縫 結束
 ];
 
 self.addEventListener("install", (e) => {
@@ -75,6 +81,10 @@ self.addEventListener("message", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
+  // S1 同步接縫 開始
+  // 雲端同步的 API 一律不攔、不快取(否則手機會一直拿到舊的同步資料,密文也會留在快取裡)
+  if (new URL(e.request.url).pathname.includes("/api/")) return;
+  // S1 同步接縫 結束
   if (e.request.method !== "GET") return;
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;

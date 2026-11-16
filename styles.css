@@ -80,6 +80,10 @@ input, textarea, select {
 }
 label { display: block; margin: 10px 0 4px; font-weight: 600; }
 .hint { color: var(--muted); font-size: 0.92rem; }
+/* S1 同步接縫 開始 */
+.test-site-tag { display: inline-block; margin-right: 0.5em; padding: 0 0.5em; border-radius: 6px; background: #ffd24a; color: #1a1a1a; font-size: 0.85rem; font-weight: 700; }
+.cloud-sync-row { margin: 6px 0; }
+/* S1 同步接縫 結束 */
 .mask { filter: blur(8px); user-select: none; }
 .mask.show { filter: none; }
 .nav {

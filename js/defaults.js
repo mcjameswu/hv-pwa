@@ -1,5 +1,5 @@
 export const SCHEMA_VERSION = "import_v1";
-export const APP_VERSION = "1.20.2";
+export const APP_VERSION = "1.21.0";
 export const DB_VERSION = 8; // R13：新增口袋教練（coach）與問價紀錄（priceLog）兩張表，資料庫升到第 8 版
 
 export const FIELD_LABELS = {

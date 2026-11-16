@@ -55,6 +55,9 @@ import { createController } from "./js/controller.js";
 import { displayItem, packChecklist } from "./js/items-for-viewing.js";
 import { propertyStatus } from "./js/notes-export.js";
 import { onboardingModel, TRIAL_ROUTE, IN_APP_NOTICE } from "./js/onboarding.js";
+// S1 同步接縫 開始
+import * as syncUi from "./js/sync-ui.js";
+// S1 同步接縫 結束
 import {
   resolveRoute,
   VISIT_STEPS,
@@ -82,7 +85,9 @@ const appEl = $("#app");
 const bannerEl = $("#topBanner");
 const interruptEl = $("#interrupt");
 
-const ctrl = createController({ db });
+// S1 同步接縫 開始
+const ctrl = createController({ db, onCommitted: (name) => syncUi.onCommitted(name) });
+// S1 同步接縫 結束
 const ui = {
   httpsLive: false,
   reveal: { scope: null, key: null }, // 私密數字揭露狀態：綁定對象（範圍與物件代號），不是全域旗標
@@ -343,6 +348,9 @@ async function boot() {
   }, 5000);
   ui.installTimer.unref?.();
   render();
+  // S1 同步接縫 開始
+  syncUi.onAppReady({ ctrl, rerender: render });
+  // S1 同步接縫 結束
 }
 
 async function onVisibility() {
@@ -424,6 +432,9 @@ function showBanner() {
 }
 
 function currentRoute() {
+  // S1 同步接縫 開始
+  if (/^#sync(\/|$)/.test(location.hash || "")) return { page: "sync", navPage: "more", canonical: "#sync", id: null, sub: null, step: null, station: null, redirected: false };
+  // S1 同步接縫 結束
   return resolveRoute(location.hash || "#home", { hasCurrentViewing: Boolean(currentOpenViewing(state)) });
 }
 
@@ -474,7 +485,10 @@ function render() {
     sheet: pageSheet,
     more: () => pageMoreRoute(route),
     coach: () => pageCoach(route),
-    price_log: () => pagePriceLog(route)
+    price_log: () => pagePriceLog(route),
+    // S1 同步接縫 開始
+    sync: () => void syncUi.renderSyncPage(appEl, { ctrl, rerender: render }).catch(() => {})
+    // S1 同步接縫 結束
   };
   // 換頁或換步驟就從最上面開始看（手機上上一頁捲到哪，新的一頁不該停在半途）；只是答了一題而重畫時不動
   const hashNow = location.hash || "#home";
@@ -3533,6 +3547,9 @@ function moreMenu() {
       el("h2", { text: "更多" }),
       el("a", { class: "menu-link", href: "#coach", "data-more": "coach" }, ["口袋大叔", el("span", { class: "hint", text: "　每個階段一步一步教你做、怎麼說、問什麼" })]),
       el("a", { class: "menu-link", href: "#price_log", "data-more": "price_log" }, ["問價紀錄", el("span", { class: "hint", text: "　每間物件誰開了什麼價、你問了什麼" })]),
+      // S1 同步接縫 開始
+      el("a", { class: "menu-link", href: "#sync", "data-more": "sync" }, ["雲端同步", el("span", { class: "hint", text: "　預設關閉;開啟後加密同步看房結果(測試中)" })]),
+      // S1 同步接縫 結束
       ...MORE_MENU.map(([sub, title, desc]) => el("a", { class: "menu-link", href: `#more/${sub}`, "data-more": sub }, [title, el("span", { class: "hint", text: `　${desc}` })]))
     ]),
     el("div", { class: "card" }, [
