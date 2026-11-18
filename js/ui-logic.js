@@ -588,3 +588,113 @@ export function isStaleFieldView(shownId, currentId) {
 export function afterReload(status) {
   return status === "failed" ? "lock" : "render";
 }
+
+// ---------------------------------------------------------------------------
+// H1 緊急修正(app-v1.21.1)：設定頁存檔提醒、底部固定列量測、開機看門狗、錯誤紀錄
+// ---------------------------------------------------------------------------
+
+/** 設定頁存好之後要顯示的通知：先「已存好」，提醒另外用黃色。提醒文字不得出現可承受上限的數字。 */
+export function settingsSavedNotices(gated, finance = {}) {
+  const out = [{ level: "info", text: "已存好。" }];
+  const high = finance?.search_range_high;
+  const highText = high === undefined || high === null || high === "" ? "" : `${high} 萬`;
+  for (const w of gated?.warnings || []) {
+    const raw = String(w?.message ?? w ?? "").trim();
+    if (!raw) continue;
+    if (w?.field === "search_range_high") {
+      if (raw.includes("高於上限乘建議比例")) {
+        out.push({
+          level: "warn",
+          text: `提醒：你設定的「對外說的上緣」${highText ? `是 ${highText}` : ""}，高於可承受上限乘建議比例。跟仲介說的上緣太接近你的真實上限，對方容易猜到你的底線；可以到本頁下方「對外說的上緣」調低。不調也能正常使用。`
+        });
+      } else {
+        out.push({ level: "warn", text: "提醒：「對外說的上緣」請核對可承受上限與建議比例是否都已填好。不調也能正常使用。" });
+      }
+    } else {
+      out.push({ level: "warn", text: `提醒：${raw}` });
+    }
+  }
+  return out;
+}
+
+/** 底部三條固定列（分頁列、上一步下一步列、看房工具列）的位置：高度用實測值，沒有的列算 0。 */
+export function bottomBarLayout({ nav = 0, step = 0, field = 0 } = {}) {
+  const px = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.ceil(v) : 0);
+  const n = px(nav);
+  const s = px(step);
+  const f = px(field);
+  return { navH: n, stepH: s, fieldH: f, stepBottom: n, fieldBottom: n + s, bodyPad: n + s + f + 16 };
+}
+
+export const BOOT_STEPS = ["註冊離線快取", "載入匯入規格", "讀取手機資料", "載入方法包", "畫出頁面"];
+export const BOOT_WATCHDOG_MS = 10000;
+
+/** 開機步驟追蹤器(純函式)：記下目前做到哪一步、有沒有完成。 */
+export function createBootTracker() {
+  const t = { step: BOOT_STEPS[0], done: false, history: [] };
+  t.enter = (name) => {
+    t.step = name;
+    t.history.push(name);
+  };
+  t.finish = () => {
+    t.done = true;
+  };
+  return t;
+}
+
+/** 看門狗該不該出面：過了時限、還沒畫出頁面才算卡住。回傳 null 表示一切正常。 */
+export function bootStuckModel(tracker, elapsedMs, limit = BOOT_WATCHDOG_MS) {
+  if (!tracker || tracker.done || elapsedMs < limit) return null;
+  return { title: `開機卡在：${tracker.step}`, buttons: ["重新載入", "清除快取後重新載入", "回首頁"] };
+}
+
+const FINANCE_WORDS = /可承受上限|budget_cap|search_range|search_ratio|自備款|月收入|房貸|存款|stable_monthly|own_funds|liquid_funds/;
+
+/** 錯誤訊息只留程式錯誤文字：含財務字樣就整句隱藏，三位以上的數字也遮掉，並限制長度。 */
+export function safeErrorText(raw) {
+  let s = String(raw ?? "").replace(/\s+/g, " ").trim();
+  if (FINANCE_WORDS.test(s)) return "(內容含財務字樣，已隱藏)";
+  s = s.replace(/\d[\d,.]{2,}/g, "(數字已隱藏)"); // 三位以上的數字一律遮掉(可能是金額)
+  return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+}
+
+export const ERROR_LOG_KEY = "house_error_log_v1";
+export const ERROR_LOG_MAX = 20;
+
+/** 把一筆錯誤加進紀錄(最新的在最前面，最多 20 筆)。純函式，不碰儲存。 */
+export function addErrorEntry(list, { where = "", message = "", at = "" } = {}) {
+  const entry = { at: String(at || ""), where: safeErrorText(where).slice(0, 60), message: safeErrorText(message) };
+  const prev = Array.isArray(list) ? list.filter((e) => e && typeof e === "object") : [];
+  return [entry, ...prev].slice(0, ERROR_LOG_MAX);
+}
+
+export function readErrorLog(storage) {
+  try {
+    const raw = storage?.getItem?.(ERROR_LOG_KEY);
+    if (!raw) return [];
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list.slice(0, ERROR_LOG_MAX) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function recordError(storage, info, at = new Date().toISOString()) {
+  try {
+    const next = addErrorEntry(readErrorLog(storage), { ...info, at });
+    storage?.setItem?.(ERROR_LOG_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return [];
+  }
+}
+
+export function errorLogText(list) {
+  const rows = (Array.isArray(list) ? list : []).map((e) => `${e.at || "?"}｜${e.where || "?"}｜${e.message || ""}`);
+  return rows.length ? rows.join("\n") : "目前沒有錯誤紀錄";
+}
+
+/** 瀏覽器常見、不影響使用的雜訊錯誤，不顯示也不記。 */
+export function isBenignError(msg) {
+  return /ResizeObserver loop/i.test(String(msg ?? ""));
+}

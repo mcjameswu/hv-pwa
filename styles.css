@@ -25,7 +25,8 @@ html, body {
   overflow-x: hidden;
   max-width: 100%;
 }
-body { padding-bottom: 112px; }
+/* H1：底部三條固定列的高度由 app.js 實測後寫進 --nav-h、--stepbar-h、--fieldbar-h；沒量到時用括號裡的舊值當後備 */
+body { padding-bottom: calc(var(--nav-h, 96px) + var(--stepbar-h, 0px) + var(--fieldbar-h, 0px) + 16px); }
 a { color: var(--brand); }
 h1, h2, h3 { color: var(--brand); margin: 0.4em 0; }
 header.app {
@@ -157,7 +158,7 @@ pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
 .steps .step.done { background: #d5e6dc; color: var(--brand); }
 .steps .arrow { align-self: center; color: var(--muted); font-size: 12px; white-space: pre; }
 .stepbar {
-  position: fixed; left: 0; right: 0; bottom: 56px; z-index: 7;
+  position: fixed; left: 0; right: 0; bottom: var(--nav-h, 56px); z-index: 7;
   display: flex; gap: 8px; padding: 8px 12px; background: #fffdf7; border-top: 1px solid var(--line);
   max-width: 720px; margin: 0 auto;
 }
@@ -190,7 +191,7 @@ details.fold[open] > summary::before { content: "▾"; }
 .menu-link { display: block; text-decoration: none; padding: 14px 12px; margin: 6px 0; min-height: var(--tap); border: 1px solid var(--line); border-radius: 12px; background: #fff; font-weight: 700; }
 .result-card { border: 2px solid var(--brand); }
 .summary-line { font-weight: 600; }
-body.has-stepbar { padding-bottom: 188px; }
+body.has-stepbar { padding-bottom: calc(var(--nav-h, 96px) + var(--stepbar-h, 76px) + var(--fieldbar-h, 0px) + 16px); }
 .banner-close { background: transparent; border: 0; color: inherit; font-size: 1.1em; padding: 0 0.3em; cursor: pointer; }
 
 /* 第 13 輪：口袋大叔（階段教練） */
@@ -263,17 +264,18 @@ body.has-stepbar { padding-bottom: 188px; }
 
 /* 第 16 輪：看房中工具列（拍照與錄音隨時按得到）、看房中卡、記憶備註小字 */
 .fieldbar {
-  position: fixed; left: 0; right: 0; bottom: 56px; z-index: 8;
+  position: fixed; left: 0; right: 0; bottom: calc(var(--nav-h, 56px) + var(--stepbar-h, 0px)); z-index: 8;
   max-width: 720px; margin: 0 auto; padding: 6px 12px; background: #fffdf7; border-top: 1px solid var(--line);
 }
-body.has-stepbar .fieldbar { bottom: 128px; }
-body.has-fieldbar { padding-bottom: 148px; }
-body.has-fieldbar.has-stepbar { padding-bottom: 260px; }
+body.has-stepbar .fieldbar { bottom: calc(var(--nav-h, 56px) + var(--stepbar-h, 72px)); }
+body.has-fieldbar { padding-bottom: calc(var(--nav-h, 96px) + var(--stepbar-h, 0px) + var(--fieldbar-h, 36px) + 16px); }
+body.has-fieldbar.has-stepbar { padding-bottom: calc(var(--nav-h, 96px) + var(--stepbar-h, 76px) + var(--fieldbar-h, 72px) + 16px); }
 .fieldbar-row { display: flex; gap: 8px; }
 .fieldbar .tb-btn { flex: 1; min-height: 56px; font-size: 18px; font-weight: 700; }
 .fieldbar .fab { position: static; right: auto; bottom: auto; min-width: 0; border-radius: 12px; box-shadow: none; }
 .fieldbar .tb-btn.recording { background: var(--danger); border-color: var(--danger); color: #fff; }
-.fieldbar-status { margin: 4px 0 0; min-height: 1.2em; color: var(--muted); font-size: 0.9rem; }
+.fieldbar-status { margin: 4px 0 0; min-height: 1.2em; color: var(--muted); font-size: 0.9rem; background: #fffdf7; }
+.fieldbar-status:empty { display: none; } /* H1：沒有文字時不佔高度 */
 .fieldbar-confirm { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .fieldbar-confirm .check-item { border: 0; padding: 0; flex: 1; }
 .live-card { border: 2px solid var(--brand); background: #f1f7f3; }

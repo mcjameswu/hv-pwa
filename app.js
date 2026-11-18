@@ -48,7 +48,7 @@ import { APP_VERSION, DEFAULT_SCORING, CONDITION_KEYS, CONDITION_LABELS, FIELD_L
 import { el, mount } from "./js/dom.js";
 import { applyThresholdChange, parseThresholdNumber, fieldLabel } from "./js/thresholds.js";
 import { isFlagOn, SCREEN_BINDINGS } from "./js/fields.js";
-import { capLabelLine, bonusLine, sortRankedByBonus, collectNumericForm, settingsPatchFromForm, scoreLineText, scoreBreakdownText, sheetRowsToCsvText, trustLabel, weekOf, hasOfferFlag, onsiteQuickItems, isRevealed, nextReveal, slotTrialResult, visitFormModel, bannerModel, afterCommand, noticesFromResult, backupDiffSummary, exportDoneMessage, numberHint, propertySelfFitLine, compareRankedText, affordLines, makeVisitDraftSaver, isStaleFieldView, afterReload } from "./js/ui-logic.js";
+import { capLabelLine, bonusLine, sortRankedByBonus, collectNumericForm, settingsPatchFromForm, scoreLineText, scoreBreakdownText, sheetRowsToCsvText, trustLabel, weekOf, hasOfferFlag, onsiteQuickItems, isRevealed, nextReveal, slotTrialResult, visitFormModel, bannerModel, afterCommand, noticesFromResult, backupDiffSummary, exportDoneMessage, numberHint, propertySelfFitLine, compareRankedText, affordLines, makeVisitDraftSaver, isStaleFieldView, afterReload, settingsSavedNotices, bottomBarLayout, BOOT_STEPS, createBootTracker, bootStuckModel, BOOT_WATCHDOG_MS, recordError, readErrorLog, errorLogText, isBenignError, safeErrorText } from "./js/ui-logic.js";
 import { rankEligible } from "./js/rank-eligible.js";
 import { applyGatedThresholdChange } from "./js/validate.js";
 import { createController } from "./js/controller.js";
@@ -255,6 +255,181 @@ function showWarn(msg) {
   pushNotice("warn", msg);
 }
 
+// ---------------------------------------------------------------------------
+// H1 緊急修正(app-v1.21.1)：永遠不留白畫面。錯誤紀錄、開機看門狗、頁面復原面板、底部固定列量測
+// 錯誤紀錄與復原面板只放程式錯誤文字與發生的步驟，不放可承受上限或任何財務數字。
+// ---------------------------------------------------------------------------
+
+const bootTrack = createBootTracker();
+const BOOT_STEPS_TEXT = { cache: BOOT_STEPS[0], schema: BOOT_STEPS[1], data: BOOT_STEPS[2], pack: BOOT_STEPS[3], paint: BOOT_STEPS[4] };
+const bootStartedAt = Date.now();
+let bootWatchdogTimer = null;
+
+function errorStorage() {
+  try {
+    return globalThis.localStorage || null;
+  } catch {
+    return null;
+  }
+}
+
+function logError(where, message) {
+  try {
+    recordError(errorStorage(), { where, message });
+  } catch {
+    /* 紀錄寫不進去也不能再出錯 */
+  }
+}
+
+function currentPageName() {
+  try {
+    return `頁面 ${currentRoute().page}`;
+  } catch {
+    return "頁面 未知";
+  }
+}
+
+function clearBootWatchdog() {
+  if (bootWatchdogTimer) clearTimeout(bootWatchdogTimer);
+  bootWatchdogTimer = null;
+}
+
+/** 只解除 Service Worker 並刪除 Cache Storage，再重新載入。絕不碰 IndexedDB（看房資料）。 */
+async function clearCachesAndReload() {
+  try {
+    const regs = (await navigator.serviceWorker?.getRegistrations?.()) || [];
+    for (const r of regs) await r.unregister();
+  } catch {
+    /* 解除失敗仍繼續 */
+  }
+  try {
+    if (typeof caches !== "undefined") {
+      for (const k of await caches.keys()) await caches.delete(k);
+    }
+  } catch {
+    /* 刪除失敗仍繼續 */
+  }
+  location.reload();
+}
+
+function goHomeNow() {
+  try {
+    location.hash = "#home";
+  } catch {
+    /* 網址換不了就直接重畫 */
+  }
+  render();
+}
+
+/** 復原面板：主區不留白，說明出了什麼事，並給出口。 */
+function showRecoveryPanel({ title, detail, buttons }) {
+  try {
+    const btns = buttons.map(([label, fn, id]) => el("button", { type: "button", id, class: id === "recReload" ? "primary" : "", text: label, onclick: fn }));
+    mount(appEl, [
+      el("section", { class: "card", id: "recoveryPanel", role: "alert" }, [
+        el("h2", { text: title }),
+        detail ? el("p", { id: "recoveryDetail", text: detail }) : null,
+        el("p", { class: "hint", text: "你的看房資料還在這支手機裡，沒有被動到。可以先按「重新載入」。" }),
+        el("div", { class: "row" }, btns)
+      ])
+    ]);
+  } catch {
+    if (appEl) appEl.textContent = `${title}。${detail || ""}請重新整理頁面。`;
+  }
+}
+
+function showRenderFailure(err, title = "這一頁出了點問題", where = null) {
+  const msg = safeErrorText(err?.message || err);
+  logError(where || currentPageName(), msg);
+  showRecoveryPanel({
+    title,
+    detail: msg,
+    buttons: [
+      ["回首頁", goHomeNow, "recHome"],
+      ["重新載入", () => location.reload(), "recReload"]
+    ]
+  });
+  try {
+    showBanner();
+  } catch {
+    /* 橫幅畫不出來不影響復原面板 */
+  }
+}
+
+function showBootStuck(model) {
+  logError(`開機：${bootTrack.step}`, "開機超過 10 秒還沒畫出頁面");
+  showRecoveryPanel({
+    title: model.title,
+    detail: "開機的某一步等太久了。可以先重新載入；還是不行，再用「清除快取後重新載入」（只清離線快取，不會動到看房資料）。",
+    buttons: [
+      ["重新載入", () => location.reload(), "recReload"],
+      ["清除快取後重新載入", () => clearCachesAndReload(), "recClear"],
+      ["回首頁", goHomeNow, "recHome"]
+    ]
+  });
+}
+
+function onGlobalError(ev) {
+  try {
+    const raw = ev?.error?.message || ev?.message || ev?.reason?.message || (ev?.reason !== undefined ? String(ev.reason) : "未知錯誤");
+    if (isBenignError(raw)) return;
+    const msg = safeErrorText(raw);
+    logError(bootTrack.done ? currentPageName() : `開機：${bootTrack.step}`, msg);
+    showError(`程式錯誤：${msg}`);
+  } catch {
+    /* 錯誤處理本身不能再丟錯 */
+  }
+}
+
+function startBoot() {
+  window.addEventListener("error", onGlobalError);
+  window.addEventListener("unhandledrejection", onGlobalError);
+  bootWatchdogTimer = setTimeout(() => {
+    bootWatchdogTimer = null;
+    const model = bootStuckModel(bootTrack, Date.now() - bootStartedAt, BOOT_WATCHDOG_MS);
+    if (model) showBootStuck(model);
+  }, BOOT_WATCHDOG_MS);
+  bootWatchdogTimer?.unref?.();
+  boot().catch((err) => {
+    clearBootWatchdog();
+    showRenderFailure(err, `開機失敗，卡在：${bootTrack.step}`, `開機：${bootTrack.step}`);
+  });
+}
+
+/** 量底部三條固定列（分頁列、上一步列、看房工具列）的實際高度，寫成 CSS 變數，讓位置與留白跟著字體大小走。 */
+let barObserver = null;
+let barObserved = [];
+let barResizeBound = false;
+function measureBars() {
+  if (typeof document === "undefined" || !document.body) return;
+  const navEl = document.querySelector(".nav");
+  const stepEl = document.querySelector("#stepbar");
+  const fieldEl = document.querySelector("#fieldBar");
+  const h = (n) => (n && typeof n.getBoundingClientRect === "function" ? n.getBoundingClientRect().height : 0);
+  const fieldShown = fieldEl && !fieldEl.classList.contains("hidden");
+  const L = bottomBarLayout({ nav: h(navEl), step: h(stepEl), field: fieldShown ? h(fieldEl) : 0 });
+  const style = document.body.style;
+  if (L.navH > 0 && typeof style?.setProperty === "function") {
+    style.setProperty("--nav-h", `${L.navH}px`);
+    style.setProperty("--stepbar-h", `${L.stepH}px`);
+    style.setProperty("--fieldbar-h", `${L.fieldH}px`);
+  }
+  if (typeof ResizeObserver === "function") {
+    const list = [navEl, stepEl, fieldEl].filter(Boolean);
+    const same = list.length === barObserved.length && list.every((n, i) => n === barObserved[i]);
+    if (!same) {
+      barObserver?.disconnect();
+      barObserver = new ResizeObserver(() => measureBars());
+      for (const n of list) barObserver.observe(n);
+      barObserved = list;
+    }
+  }
+  if (!barResizeBound && typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    barResizeBound = true;
+    window.addEventListener("resize", measureBars);
+  }
+}
+
 async function loadGeneric({ quiet = false } = {}) {
   try {
     const res = await fetch("./methods/generic/method.json");
@@ -271,6 +446,7 @@ function liveHttps() {
 }
 
 async function boot() {
+  bootTrack.enter(BOOT_STEPS_TEXT.cache);
   ui.httpsLive = liveHttps();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").then((reg) => {
@@ -292,6 +468,7 @@ async function boot() {
       });
     }).catch(() => {});
   }
+  bootTrack.enter(BOOT_STEPS_TEXT.schema);
   try {
     schema = await loadImportSchema();
     setImportSchema(schema);
@@ -299,9 +476,12 @@ async function boot() {
     showError(`匯入規格載入失敗：${err.message || err}`);
     schema = null;
   }
+  bootTrack.enter(BOOT_STEPS_TEXT.data);
   const loaded = await ctrl.load();
   refreshState();
   if (typeof ctrl.getLoadStatus === "function" && ctrl.getLoadStatus() === "failed") {
+    bootTrack.finish();
+    clearBootWatchdog();
     showLockScreen(loaded);
     return;
   }
@@ -311,6 +491,7 @@ async function boot() {
   ui.recording = false;
   const vl = document.getElementById("versionLine");
   if (vl) vl.textContent = `app-v${APP_VERSION} · 資料只存在這支手機`;
+  bootTrack.enter(BOOT_STEPS_TEXT.pack);
   if (!state.methodPack) {
     const pack = await loadGeneric();
     if (pack) {
@@ -347,7 +528,11 @@ async function boot() {
     if ((h === "#home" || h === "#more/start") && onboardingNow().inAppNotice !== before) render();
   }, 5000);
   ui.installTimer.unref?.();
-  render();
+  bootTrack.enter(BOOT_STEPS_TEXT.paint);
+  renderPage(); // 開機第一次畫面不吞例外：丟出去由外層 bootGuard 顯示復原面板
+  bootTrack.finish();
+  clearBootWatchdog();
+  measureBars();
   // S1 同步接縫 開始
   syncUi.onAppReady({ ctrl, rerender: render });
   // S1 同步接縫 結束
@@ -461,6 +646,15 @@ function annotateGlossary() {
 }
 
 function render() {
+  try {
+    renderPage();
+    measureBars();
+  } catch (err) {
+    showRenderFailure(err);
+  }
+}
+
+function renderPage() {
   visitDraftSaver?.flushPending(); // 換頁前，還在等待的門市草稿先送出（F9-07）
   refreshState();
   const route = currentRoute();
@@ -3561,12 +3755,38 @@ function moreMenu() {
     el("div", { class: "card" }, [
       el("h2", { text: "隱私" }),
       el("p", { text: `沒有分析、遙測或廣告。版本 app-v${APP_VERSION}。課程方法包不會打進託管版本。` })
-    ])
+    ]),
+    errorLogCard()
   ]);
   $("#exportNotes").onclick = async () => {
     const r = await exportToNotes();
     exportMsg.textContent = r.message;
   };
+}
+
+/** 「更多」頁最下方的錯誤紀錄（最多 20 筆，只有時間、頁面或步驟、程式錯誤文字，沒有任何財務數字），可複製後貼給統籌。 */
+function errorLogCard() {
+  const list = readErrorLog(errorStorage());
+  const logText = errorLogText(list);
+  const msg = el("p", { class: "hint", id: "errorLogMsg" });
+  const copy = el("button", { type: "button", id: "errorLogCopy", text: "複製" });
+  copy.onclick = async () => {
+    try {
+      const prepared = prepareOutbound({ recipient: "agent", userText: logText, state });
+      const done = await writeClipboard(prepared);
+      if (!done.ok || done.skipped) throw new Error("clipboard");
+      msg.textContent = "已複製。可以貼給統籌。";
+    } catch {
+      msg.textContent = "這支手機不讓複製，請直接截圖上面的紀錄。";
+    }
+  };
+  return el("div", { class: "card", id: "errorLogCard" }, [
+    el("h2", { text: "錯誤紀錄" }),
+    el("p", { class: "hint", text: "App 出錯時會自動記在這裡（最多 20 筆，只記程式錯誤文字，不含任何財務數字）。遇到問題時請截圖或按「複製」貼給統籌。" }),
+    list.length ? el("pre", { id: "errorLogText", text: logText }) : el("p", { id: "errorLogText", text: logText }),
+    list.length ? copy : null,
+    msg
+  ]);
 }
 
 /** 十週進度：W0、W3、W6、W10 的檢查點文字整段放在這裡，預設收起。 */
@@ -3655,6 +3875,13 @@ function moreSettings() {
       el("button", { class: "primary", id: "saveSet", text: "存設定" }),
       el("button", { type: "button", id: "startCoolSet", text: "開始 7 天冷靜期" })
     ]),
+    el("details", { class: "fold", id: "outerCapFold" }, [
+      el("summary", { text: "對外說的上緣（跟仲介說的價格範圍）" }),
+      el("p", { class: "hint", text: "「對外說的上緣」是你跟仲介說「我大概在看多少萬以內」的那個數字。它要比你的可承受上限低，對方才摸不到你的底線。這個數字是同步匯入時從你的底稿帶進來的，這裡可以看，也可以改；改完按上面的「存設定」。" }),
+      input("searchHigh", "對外說的上緣（萬）", { inputmode: "decimal" }),
+      input("searchRatio", "上緣占上限的建議最高比例（例如 0.9）", { inputmode: "decimal" }),
+      el("p", { class: "hint", text: "調低馬上生效；調高算調鬆，會照原本的冷靜期規則處理。不改也能正常使用。" })
+    ]),
     el("details", { class: "fold", id: "tenWeekFold" }, [
       el("summary", { text: "十週計畫追蹤(進階)" }),
       el("label", { class: "check-item" }, [el("input", { type: "checkbox", id: "offlineVerified" }), " 離線實測已通過"]),
@@ -3703,6 +3930,8 @@ function moreSettings() {
       el("button", { type: "button", id: "saveW", text: "存權重" })
     ])
   ]);
+  if (state.finance.search_range_high != null && state.finance.search_range_high !== "") $("#searchHigh").value = String(state.finance.search_range_high);
+  if (state.finance.search_ratio_max != null && state.finance.search_ratio_max !== "") $("#searchRatio").value = String(state.finance.search_ratio_max);
   $("#sttAllow").value = state.settings.online_transcribe || "否";
   if (state.settings.program_start) $("#progStart").value = state.settings.program_start;
   if (state.settings.goal_commit != null) $("#goalCommit").value = String(state.settings.goal_commit);
@@ -3796,6 +4025,12 @@ function moreSettings() {
       patch.finance = { budget_cap_total: b01raw };
       patch.settings.self_entered_cap = true;
     }
+    // 對外說的上緣與建議比例：有改才送（沒改就不碰），照現有門檻規則處理
+    for (const [id, key] of [["searchHigh", "search_range_high"], ["searchRatio", "search_ratio_max"]]) {
+      const raw = ($(`#${id}`)?.value || "").trim();
+      const cur = state.finance[key];
+      if (raw !== "" && raw !== String(cur ?? "")) patch.finance = { ...(patch.finance || {}), [key]: raw };
+    }
     const gated = await ctrl.applyThreshold(patch, { reason: $("#coolReason").value, startCooling });
     if (!gated.ok) {
       if (gated.startedCooling && gated.cooling) {
@@ -3810,9 +4045,10 @@ function moreSettings() {
       showError(gated.message || gated.error);
       return;
     }
-    if (Array.isArray(gated.warnings) && gated.warnings.length) {
-      showError(gated.warnings.map((w) => w.message || w).join("；"));
-    }
+    // 存好了：先說「已存好」，提醒另外用黃色顯示（上限欄位因隱私設計存完會清空，不說的話看起來像沒存）
+    refreshState();
+    ui.notices = afterCommand(ui.notices, gated);
+    for (const n of settingsSavedNotices(gated, state.finance)) pushNotice(n.level, n.text);
     const nextAt = $("#partnerConsentAt").value;
     const nextHow = $("#partnerConsentHow").value;
     if (nextAt && nextHow && (nextAt !== prevAt || nextHow !== prevHow)) {
@@ -5175,4 +5411,4 @@ function routeOverviewCard(cur, defs) {
   ];
 }
 
-boot();
+startBoot();
