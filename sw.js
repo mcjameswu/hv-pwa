@@ -1,4 +1,4 @@
-const CACHE = "house-app-v1.21.1";
+const CACHE = "house-app-v1.22.0";
 const ASSETS = [
   "./",
   "./index.html",

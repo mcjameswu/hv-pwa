@@ -12,6 +12,7 @@ import { uniqueCounted } from "./counting.js";
 import { extractMoneyWan, sameWan } from "./chinese-num.js";
 import { buildUncompressedZip, stripJpegExif, jsonBytes } from "./zip.js";
 import { notesScanText } from "./notes-export.js";
+import { chooseRecordingDelivery } from "./ui-logic.js";
 import { priceLogProblems } from "./price-log.js";
 
 export function recipientKind(recipient) {
@@ -465,4 +466,60 @@ export function createPreviewUrl(blob) {
   } catch {
     return "";
   }
+}
+
+/**
+ * H2：把使用者自己寫的筆記或逐字稿複製到這支手機的剪貼簿（使用者自己按「複製」，貼去哪裡由使用者決定，App 不代送）。
+ * 不走對外出口閘門：那道閘門是給「送給別人」的訊息用的；這裡是使用者複製自己的文字。
+ */
+export async function copyPlainText(text) {
+  const t = String(text ?? "");
+  if (!t.trim()) return { ok: false, error: "沒有內容可複製" };
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(t);
+      return { ok: true };
+    }
+  } catch {
+    /* 落到下面的手動複製 */
+  }
+  return { ok: false, manual: true };
+}
+
+/**
+ * H2-03：把一段錄音存到手機。支援下載連結就下載；不支援（例如部分 iOS）改用系統分享；都不行回 manual，請使用者播放後長按存檔。
+ * 只在這支手機上動作，沒有任何網路呼叫。
+ */
+export async function deliverRecordingFile(blob, filename) {
+  if (typeof document === "undefined") return { ok: true, how: "download", filename };
+  const probe = document.createElement("a");
+  let file = null;
+  let canShare = false;
+  try {
+    file = typeof File === "function" ? new File([blob], filename, { type: blob.type || "audio/webm" }) : null;
+    canShare = !!(file && typeof navigator !== "undefined" && typeof navigator.canShare === "function" && navigator.canShare({ files: [file] }) && typeof navigator.share === "function");
+  } catch {
+    canShare = false; // RH2-05:不支援的環境降級,不丟未捕捉錯誤
+  }
+  const how = chooseRecordingDelivery({ hasDownload: "download" in probe, canShareFiles: canShare });
+  if (how === "download") {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000); // RH2-05:部分手機下載是非同步,晚一點再釋放
+    return { ok: true, how, filename };
+  }
+  if (how === "share") {
+    try {
+      await navigator.share({ files: [file], title: filename });
+      return { ok: true, how, filename };
+    } catch {
+      return { ok: false, how: "manual", filename };
+    }
+  }
+  return { ok: false, how: "manual", filename };
 }

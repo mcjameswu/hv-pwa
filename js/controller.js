@@ -34,12 +34,22 @@ import { call as syncCall } from "./sync-net.js";
 import { needUpload, validateDeskPayload, autoApplyDecision } from "./sync-engine.js";
 import { mergeWithCurrent } from "./csv.js";
 import { NOTES_KEY_ALIASES } from "./fields.js";
+import { joinTranscripts } from "./ui-logic.js";
 // S1 同步接縫 結束
+
+/** H2：每題筆記與整體筆記的字數上限。 */
+export const NOTE_MAX = 2000;
+export const OVERALL_NOTE_MAX = 5000;
+export const TRANSCRIPT_MAX = 20000;
 
 export const WRITE_COMMANDS = [
   "addProperty",
   "updateProperty",
   "setChecklistResponse",
+  "setItemNote",
+  "setOverallNote",
+  "deleteRecording",
+  "editTranscript",
   "takePhoto",
   "takeVisitPhoto",
   "addAudioChunk",
@@ -328,6 +338,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
   let tail = Promise.resolve();
   const session = {
     boundRecordingViewingId: null,
+    activeRecordingId: null,
     sttViewingId: null,
     sttConsented: false,
     recordingExpectedStop: false
@@ -663,6 +674,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
 
   function handleRecordingStopped({ expected = false, saveError = null } = {}) {
     session.boundRecordingViewingId = null;
+    session.activeRecordingId = null;
     const unexpected = !expected;
     return {
       unexpected,
@@ -853,12 +865,55 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
       const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
       if (!viewing) return { ok: false, error: viewingId ? "找不到指定的看房紀錄" : "尚未選定看房" };
       viewing.responses = viewing.responses || {};
-      if (value == null || value === "" || (typeof value === "object" && !value.status && (value.value === "" || value.value == null))) {
-        delete viewing.responses[itemId];
+      // H2-01：合併不覆蓋。按選項只更新 status 與 value，已寫的每題筆記（note）保留
+      const prevNote = typeof viewing.responses[itemId]?.note === "string" ? viewing.responses[itemId].note : "";
+      const clearing = value == null || value === "" || (typeof value === "object" && !value.status && (value.value === "" || value.value == null));
+      if (clearing) {
+        if (prevNote) viewing.responses[itemId] = { note: prevNote };
+        else delete viewing.responses[itemId];
       } else {
-        viewing.responses[itemId] = typeof value === "object" ? value : { status: value, value };
+        const next = typeof value === "object" ? { ...value } : { status: value, value };
+        if (prevNote && next.note === undefined) next.note = prevNote;
+        viewing.responses[itemId] = next;
       }
       return { ok: true };
+    });
+  }
+
+  /**
+   * H2-01：只存某一題的補充筆記（最多 2000 字，去頭尾空白）。保留 status 與 value；
+   * 沒有選項只有筆記時存得下來，但不算作答（計數與評分一律看 status）；筆記清空且沒有 status 與 value 時才刪整筆。
+   */
+  async function setItemNote(itemId, text, viewingId) {
+    return command("setItemNote", async (draft) => {
+      const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
+      if (!viewing) return { ok: false, error: viewingId ? "找不到指定的看房紀錄" : "尚未選定看房" };
+      if (typeof itemId !== "string" || !itemId) return { ok: false, error: "缺少題目代號" };
+      const note = String(text ?? "").trim().slice(0, NOTE_MAX);
+      viewing.responses = viewing.responses || {};
+      const cur = viewing.responses[itemId];
+      if (note) {
+        viewing.responses[itemId] = { ...(cur || {}), note };
+      } else if (cur) {
+        const rest = { ...cur };
+        delete rest.note;
+        const hasAnswer = (rest.status !== undefined && rest.status !== null && rest.status !== "") || (rest.value !== undefined && rest.value !== null && rest.value !== "");
+        if (hasAnswer) viewing.responses[itemId] = rest;
+        else delete viewing.responses[itemId];
+      }
+      return { ok: true, note };
+    });
+  }
+
+  /** H2-02：每間整體筆記（最多 5000 字）。 */
+  async function setOverallNote(text, viewingId) {
+    return command("setOverallNote", async (draft) => {
+      const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
+      if (!viewing) return { ok: false, error: viewingId ? "找不到指定的看房紀錄" : "尚未選定看房" };
+      const note = String(text ?? "").trim().slice(0, OVERALL_NOTE_MAX);
+      if (note) viewing.overall_note = note;
+      else delete viewing.overall_note;
+      return { ok: true, note };
     });
   }
 
@@ -932,7 +987,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
    * 第 16 輪 F-R16-55：錄音中換到某一站，在這次看房記一筆標記（錄音開始後第幾秒、站名）。
    * 只記站名與秒數，不碰音檔；之後看房後頁列出「錄音段落」，筆記匯出也只帶這兩樣。
    */
-  async function addRecMark({ viewingId, sec, station_key: stationKey, name } = {}) {
+  async function addRecMark({ viewingId, sec, station_key: stationKey, name, recording_id: recordingId } = {}) {
     return command("addRecMark", async (draft) => {
       const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
       if (!viewing) return { ok: false, error: "找不到看房紀錄" };
@@ -940,7 +995,8 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
       if (s === null || s < 0) return { ok: false, error: "錄音秒數不對" };
       const label = String(name ?? "").trim().slice(0, 40);
       if (!label) return { ok: false, error: "站名不可空白" };
-      viewing.rec_marks = [...(Array.isArray(viewing.rec_marks) ? viewing.rec_marks : []), { sec: Math.floor(s), station_key: String(stationKey ?? "").slice(0, 40), name: label }];
+      const rid = recordingId || (session.boundRecordingViewingId === viewing.id ? session.activeRecordingId : null);
+      viewing.rec_marks = [...(Array.isArray(viewing.rec_marks) ? viewing.rec_marks : []), { sec: Math.floor(s), station_key: String(stationKey ?? "").slice(0, 40), name: label, ...(rid ? { recording_id: String(rid) } : {}) }];
       return { ok: true };
     });
   }
@@ -965,10 +1021,12 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
   function startRecording(viewingId) {
     const vid = viewingId || committed.currentViewingId;
     session.boundRecordingViewingId = vid;
-    return { ok: true, viewingId: vid };
+    // H2-03：每次按開始錄音產生一個錄音代號，之後這次的分片與站別標記都帶這個代號
+    session.activeRecordingId = nid("rec");
+    return { ok: true, viewingId: vid, recordingId: session.activeRecordingId };
   }
 
-  async function addAudioChunk({ blob, viewingId } = {}) {
+  async function addAudioChunk({ blob, viewingId, recordingId } = {}) {
     return command("addAudioChunk", async (draft, tx) => {
       const vid = viewingId || session.boundRecordingViewingId || draft.currentViewingId;
       if (!draft.viewings.some((x) => x.id === vid)) return { ok: false, error: "錄音沒有對應的看房紀錄" };
@@ -979,13 +1037,18 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
         return { ok: false, error: "錄音分片無法讀取" };
       }
       if (!bytes || bytes.length === 0) return { ok: true, skipped: true };
+      const rid = recordingId || (session.boundRecordingViewingId === vid ? session.activeRecordingId : null) || null;
+      const mime = typeof blob?.type === "string" ? blob.type.slice(0, 80) : "";
       const rec = {
         id: nid("a"),
         viewing_id: vid,
         type: "audio",
         at: new Date(now()).toISOString(),
         size: bytes?.length || 0,
-        bytes
+        bytes,
+        // H2-03：錄音代號、段內第幾片、音檔格式（舊資料沒有這三個欄位）
+        ...(rid ? { recording_id: String(rid), seq: (draft.audioChunks || []).filter((c) => c.recording_id === String(rid)).length } : {}),
+        ...(mime ? { mime } : {})
       };
       tx.chunkPuts.push(rec);
       draft.audioChunks.push(stripBytes(rec));
@@ -995,6 +1058,7 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
 
   function stopRecording() {
     session.boundRecordingViewingId = null;
+    session.activeRecordingId = null;
     return { ok: true };
   }
 
@@ -1007,6 +1071,77 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
       if (!String(text ?? "").trim()) return { ok: true, skipped: true };
       viewing.transcript = `${viewing.transcript || ""}${text || ""}`;
       draft.transcripts.push({ id: nid("t"), viewing_id: vid, text, at: new Date(now()).toISOString() });
+      return { ok: true };
+    });
+  }
+
+  /**
+   * H2-03：讀一段錄音的內容（只讀這一段的分片，不讀全部錄音），依傳入的順序串成一個 Blob。
+   * 唯讀指令：排在目前所有寫入之後，不提交、不改狀態。
+   */
+  async function readRecordingBlob({ viewingId, chunkIds } = {}) {
+    return readQuery(async (cur) => {
+      const ids = Array.isArray(chunkIds) ? chunkIds.map(String) : [];
+      if (!ids.length) return { ok: false, error: "這一段沒有錄音分片" };
+      const metas = new Map((cur.audioChunks || []).map((c) => [c.id, c]));
+      for (const id of ids) {
+        const m = metas.get(id);
+        if (!m || (viewingId && m.viewing_id !== viewingId)) return { ok: false, error: "找不到這一段錄音的分片" };
+      }
+      if (typeof db.get !== "function") return { ok: false, error: "目前的資料庫不能讀取錄音內容" };
+      const parts = [];
+      for (const id of ids) {
+        const rec = await db.get("audioChunks", id);
+        const bytes = rec ? await mediaBytes(rec) : null;
+        if (!bytes || !bytes.length) return { ok: false, error: "有一片錄音內容讀不到，這一段無法播放" };
+        parts.push(bytes);
+      }
+      const mime = metas.get(ids[0])?.mime || "audio/webm";
+      return { ok: true, blob: new Blob(parts, { type: mime }), mime, size: parts.reduce((n, b) => n + b.length, 0) };
+    });
+  }
+
+  /**
+   * H2-03：刪掉一段錄音（只刪這一段的分片，以及帶這段錄音代號的站別標記；舊資料沒有代號的標記由 markIndexes 指定）。
+   * 正在錄的那一段不能刪。寫一筆稽核，內容只有看房代號、錄音代號與分片數。
+   */
+  async function deleteRecording({ viewingId, recordingId, chunkIds, markIndexes } = {}) {
+    return command("deleteRecording", async (draft, tx) => {
+      const viewing = draft.viewings.find((x) => x.id === (viewingId || draft.currentViewingId));
+      if (!viewing) return { ok: false, error: "找不到看房紀錄" };
+      const ids = [...new Set(Array.isArray(chunkIds) ? chunkIds.map(String) : [])];
+      if (!ids.length) return { ok: false, error: "沒有指定要刪的錄音分片" };
+      const metas = new Map((draft.audioChunks || []).map((c) => [c.id, c]));
+      for (const id of ids) {
+        const m = metas.get(id);
+        if (!m || m.viewing_id !== viewing.id) return { ok: false, error: "找不到這一段錄音的分片" };
+        if (session.activeRecordingId && session.boundRecordingViewingId === viewing.id && m.recording_id === session.activeRecordingId) {
+          return { ok: false, error: "這一段還在錄音，不能刪。請先停止錄音。" };
+        }
+      }
+      for (const id of ids) tx.deletes.push({ store: "audioChunks", id });
+      const gone = new Set(ids);
+      draft.audioChunks = (draft.audioChunks || []).filter((c) => !gone.has(c.id));
+      const drop = new Set((Array.isArray(markIndexes) ? markIndexes : []).filter((n) => Number.isInteger(n) && n >= 0));
+      const before = Array.isArray(viewing.rec_marks) ? viewing.rec_marks : [];
+      const rid = recordingId && !String(recordingId).startsWith("legacy-") ? String(recordingId) : null;
+      viewing.rec_marks = before.filter((m, i) => !drop.has(i) && !(rid && m?.recording_id === rid));
+      draft.audit = draft.audit || [];
+      draft.audit.push({ id: nid("au"), type: "recording_deleted", viewing_id: viewing.id, recording_id: recordingId ? String(recordingId) : "", chunks: ids.length, at: new Date(now()).toISOString() });
+      return { ok: true, deleted: ids.length };
+    });
+  }
+
+  /** H2-04：改一筆逐字稿，並依時間重算這間看房的逐字稿全文。 */
+  async function editTranscript(id, text) {
+    return command("editTranscript", async (draft) => {
+      const row = (draft.transcripts || []).find((t) => t.id === id);
+      if (!row) return { ok: false, error: "找不到這一筆逐字稿" };
+      row.text = String(text ?? "").slice(0, TRANSCRIPT_MAX);
+      const viewing = draft.viewings.find((x) => x.id === row.viewing_id);
+      if (!viewing) return { ok: false, error: "逐字稿沒有對應的看房紀錄" };
+      const mine = (draft.transcripts || []).filter((t) => t.viewing_id === row.viewing_id);
+      viewing.transcript = joinTranscripts(mine);
       return { ok: true };
     });
   }
@@ -2527,7 +2662,11 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
       const rec = recordValue(value);
       const bag = custom ? "custom_answers" : "responses";
       viewing[bag] = { ...(viewing[bag] || {}) };
+      // H2-01：按選項不覆蓋每題筆記；清掉答案但有筆記時，留下只有筆記的一筆（不算作答）
+      const prevNote = typeof viewing[bag][key]?.note === "string" ? viewing[bag][key].note : "";
+      if (rec && prevNote && rec.note === undefined) rec.note = prevNote;
       if (rec) viewing[bag][key] = rec;
+      else if (prevNote) viewing[bag][key] = { note: prevNote };
       else delete viewing[bag][key];
       if (!custom && station?.def.repeatable) viewing.responses = recomputeAggregates(viewing.responses || {}, stations);
       return { ok: true, key };
@@ -2723,7 +2862,8 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
       const station = stations.find((s) => s.key === stationKey) || (!custom ? stations.find((s) => s.def.itemIds.includes(itemId)) : null);
       const key = responseKeyOf(itemId, station);
       const bag = custom ? "custom_answers" : "responses";
-      viewing[bag] = { ...(viewing[bag] || {}), [key]: { status: "不適用", value: "不適用", reason: norm.value } };
+      const prevNote = typeof viewing[bag]?.[key]?.note === "string" ? viewing[bag][key].note : "";
+      viewing[bag] = { ...(viewing[bag] || {}), [key]: { status: "不適用", value: "不適用", reason: norm.value, ...(prevNote ? { note: prevNote } : {}) } };
       if (!custom && station?.def.repeatable) viewing.responses = recomputeAggregates(viewing.responses || {}, stations);
       return { ok: true };
     });
@@ -2741,7 +2881,8 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
         const station = stations.find((s) => s.key === t.stationKey) || null;
         const key = station ? responseKeyOf(t.itemId, station) : t.itemId;
         if (responseValue(viewing.responses?.[key]).filled) continue;
-        viewing.responses = { ...(viewing.responses || {}), [key]: { status: "待核", value: "待核" } };
+        const prevNote = typeof viewing.responses?.[key]?.note === "string" ? viewing.responses[key].note : "";
+        viewing.responses = { ...(viewing.responses || {}), [key]: { status: "待核", value: "待核", ...(prevNote ? { note: prevNote } : {}) } };
         n += 1;
       }
       if (stations.length) viewing.responses = recomputeAggregates(viewing.responses || {}, stations);
@@ -3021,6 +3162,8 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
     updateProperty,
     saveFieldInputs,
     setChecklistResponse,
+    setItemNote,
+    setOverallNote,
     checklistSource,
     takePhoto,
     takeVisitPhoto,
@@ -3030,6 +3173,9 @@ export function createController({ db, now = () => Date.now(), idgen, testMode, 
     addAudioChunk,
     stopRecording,
     appendFinalTranscript,
+    editTranscript,
+    readRecordingBlob,
+    deleteRecording,
     exportBackup,
     importBackupFiles,
     applyBackupPayload,

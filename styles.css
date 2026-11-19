@@ -284,3 +284,13 @@ body.has-fieldbar.has-stepbar { padding-bottom: calc(var(--nav-h, 96px) + var(--
 .prop-row .meta.memo { color: var(--ink); font-size: 0.85rem; }
 .fieldbar.hidden, .fieldbar-confirm.hidden { display: none; }
 .card-preview { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+
+/* H2 每題筆記、整體筆記、錄音與逐字稿 */
+.note-box { margin-top: 6px; }
+.note-btn { min-height: 44px; font-size: 0.95rem; max-width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.item-note, .overall-note textarea, .transcript-row textarea { width: 100%; min-height: 88px; box-sizing: border-box; }
+.item-note.hidden { display: none; }
+.rec-row { border-top: 1px solid #ddd; padding: 8px 0; }
+.rec-row audio { width: 100%; margin-top: 6px; }
+.rec-row .row button { min-height: 44px; }
+.all-notes pre, .transcript-all { white-space: pre-wrap; word-break: break-word; }

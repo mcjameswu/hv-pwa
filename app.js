@@ -7,7 +7,7 @@ import { UNKNOWN_FILE_MESSAGE, prefillHint } from "./js/notes-import.js";
 import { sizeCheck, parseAreaLower, scoreProperty, priceDropToCapReminder, propertiesForAgentDraft, isStretchProperty, assessPropertyFromState, latestAnswerClearsVeto, orderedViewings, mergedEvidenceFor } from "./js/scoring.js";
 import { runAffordability, DOWN_PENDING } from "./js/affordability.js";
 import { scanDraft, whitelistUploadPack } from "./js/scanner.js";
-import { prepareOutbound, isUploadablePhoto, writeClipboard, downloadOutbound, displayDiffChanges, downloadBackupJson, downloadZipBytes, deliverNotesFile, deliverResultCard, createPreviewUrl, systemPartnerText } from "./js/egress.js";
+import { prepareOutbound, isUploadablePhoto, writeClipboard, downloadOutbound, displayDiffChanges, downloadBackupJson, downloadZipBytes, deliverNotesFile, deliverResultCard, createPreviewUrl, systemPartnerText, copyPlainText, deliverRecordingFile } from "./js/egress.js";
 import { buildResultCardModel, drawResultCard, resultCardFileName } from "./js/result-card.js";
 import { parseHM, formatHM } from "./js/slots.js";
 import { countViewing, uniqueCounted, w3OnsiteAudit, sameDaySoftWarning, responseValue } from "./js/counting.js";
@@ -48,7 +48,7 @@ import { APP_VERSION, DEFAULT_SCORING, CONDITION_KEYS, CONDITION_LABELS, FIELD_L
 import { el, mount } from "./js/dom.js";
 import { applyThresholdChange, parseThresholdNumber, fieldLabel } from "./js/thresholds.js";
 import { isFlagOn, SCREEN_BINDINGS } from "./js/fields.js";
-import { capLabelLine, bonusLine, sortRankedByBonus, collectNumericForm, settingsPatchFromForm, scoreLineText, scoreBreakdownText, sheetRowsToCsvText, trustLabel, weekOf, hasOfferFlag, onsiteQuickItems, isRevealed, nextReveal, slotTrialResult, visitFormModel, bannerModel, afterCommand, noticesFromResult, backupDiffSummary, exportDoneMessage, numberHint, propertySelfFitLine, compareRankedText, affordLines, makeVisitDraftSaver, isStaleFieldView, afterReload, settingsSavedNotices, bottomBarLayout, BOOT_STEPS, createBootTracker, bootStuckModel, BOOT_WATCHDOG_MS, recordError, readErrorLog, errorLogText, isBenignError, safeErrorText } from "./js/ui-logic.js";
+import { capLabelLine, bonusLine, sortRankedByBonus, collectNumericForm, settingsPatchFromForm, scoreLineText, scoreBreakdownText, sheetRowsToCsvText, trustLabel, weekOf, hasOfferFlag, onsiteQuickItems, isRevealed, nextReveal, slotTrialResult, visitFormModel, bannerModel, afterCommand, noticesFromResult, backupDiffSummary, exportDoneMessage, numberHint, propertySelfFitLine, compareRankedText, affordLines, makeVisitDraftSaver, isStaleFieldView, afterReload, settingsSavedNotices, bottomBarLayout, BOOT_STEPS, createBootTracker, bootStuckModel, BOOT_WATCHDOG_MS, recordError, readErrorLog, errorLogText, isBenignError, safeErrorText, noteButtonText, collectViewingNotes, allNotesText, groupRecordings, recordingExt, recordingFileName, recordingTitle, joinTranscripts } from "./js/ui-logic.js";
 import { rankEligible } from "./js/rank-eligible.js";
 import { applyGatedThresholdChange } from "./js/validate.js";
 import { createController } from "./js/controller.js";
@@ -118,6 +118,8 @@ const ui = {
   stationNow: null, // 這一頁如果是現場的某一站：{ viewingId, key, name }
   recConsentFor: null, // 錄音前「已告知在場的人」確認過的看房代號（這次看房記住，不再問）
   recStartedAt: 0,
+  activeRecordingId: null, // 正在錄的這一段錄音代號（錄音中不能播放或刪除這一段）
+  recPlayers: {}, // 錄音回聽：每一段目前建立的播放網址與播放器，換頁或關閉時放掉
   recMarkLast: null,
   recTick: null,
   tbAsk: false,
@@ -654,8 +656,27 @@ function render() {
   }
 }
 
+/** H2-03：放掉所有錄音回聽用的暫時網址（換頁、重畫、關閉播放時呼叫，避免佔記憶體）。 */
+function releaseRecPlayers() {
+  for (const k of Object.keys(ui.recPlayers || {})) {
+    const pl = ui.recPlayers[k];
+    try {
+      pl.audio?.pause?.();
+    } catch {
+      /* ignore */
+    }
+    try {
+      URL.revokeObjectURL(pl.url);
+    } catch {
+      /* ignore */
+    }
+  }
+  ui.recPlayers = {};
+}
+
 function renderPage() {
   visitDraftSaver?.flushPending(); // 換頁前，還在等待的門市草稿先送出（F9-07）
+  releaseRecPlayers();
   refreshState();
   const route = currentRoute();
   // 舊網址（#import、#field、#agency、#compare、#aff）與不認得的網址：換成新位置，不留歷史，一定有頁面可以畫
@@ -1235,6 +1256,117 @@ function visitSelectStep() {
   };
 }
 
+/**
+ * H2-01 每題補充筆記：一顆小按鈕「加筆記」，點了展開輸入框，離開欄位自動存（存到這題回應的 note）。
+ * itemKey 是回應的鍵（可重複的站是「題目代號@站代號」）。只有筆記沒有選項時存得下來，但不算作答。
+ */
+function itemNoteBox(itemKey, viewingId) {
+  const getNote = () => {
+    const rec = state.viewings.find((v) => v.id === viewingId)?.responses?.[itemKey];
+    return typeof rec?.note === "string" ? rec.note : "";
+  };
+  const btn = el("button", { type: "button", class: "note-btn", "data-note-btn": itemKey, text: noteButtonText(getNote()) });
+  const ta = el("textarea", { rows: "3", class: "item-note hidden", "data-item-note": itemKey, maxlength: "2000", placeholder: "寫下你看到、聽到、仲介說的" });
+  ta.value = getNote();
+  const saved = el("span", { class: "hint small note-saved", "data-note-saved": itemKey });
+  btn.onclick = () => {
+    ta.classList.toggle("hidden");
+    if (!ta.classList.contains("hidden")) ta.focus?.();
+  };
+  ta.onchange = async () => {
+    const r = await runCommand(() => ctrl.setItemNote(itemKey, ta.value, viewingId), { keepNotices: true });
+    if (r?.ok) {
+      btn.textContent = noteButtonText(getNote());
+      saved.textContent = "已存";
+      // RH2-03:同一題若還有「一行備註」欄(同一份筆記),同步更新,避免舊值蓋回
+      const sib = box.parentElement?.querySelector?.(".problem-note");
+      if (sib) sib.value = getNote();
+    } else saved.textContent = "";
+  };
+  ta.oninput = () => {
+    saved.textContent = "";
+  };
+  const box = el("div", { class: "note-box", "data-note-box": itemKey }, [btn, ta, saved]);
+  return box;
+}
+
+/** H2-02 每間整體筆記：離開欄位自動存（最多 5000 字）。看房中、看房後、物件頁共用。 */
+function overallNoteCard(viewingId, { id = "overallNote" } = {}) {
+  const cur = () => state.viewings.find((v) => v.id === viewingId);
+  const ta = el("textarea", { rows: "4", id, "data-overall-note": viewingId, maxlength: "5000", placeholder: "這間整體的感覺、仲介說的重點、想再確認的事" });
+  ta.value = cur()?.overall_note || "";
+  const saved = el("span", { class: "hint small", "data-overall-saved": viewingId });
+  ta.onchange = async () => {
+    const r = await runCommand(() => ctrl.setOverallNote(ta.value, viewingId), { keepNotices: true });
+    saved.textContent = r?.ok ? "已存" : "";
+  };
+  ta.oninput = () => {
+    saved.textContent = "";
+  };
+  return el("div", { class: "card overall-note" }, [el("h3", { text: "整體筆記" }), ta, saved]);
+}
+
+/** 這間看房所有每題筆記與整體筆記，依站別整理的資料。 */
+function viewingNotesModel(viewing) {
+  const items = ctrl.checklistSource(viewing).map((i) => displayItem(state, i));
+  const prop = state.properties.find((p) => p.id === viewing.property_id) || {};
+  const coach = normalizeCoach(state.coach);
+  const defs = routeStations(state.methodPack, items, coach.hidden_items);
+  const stations = defs.length ? resolveStations(viewing.sites, defs, prop) : [];
+  const stationOf = (key, base) => {
+    if (key.includes("@")) {
+      const sk = key.slice(key.indexOf("@") + 1);
+      return stations.find((s) => s.key === sk)?.name || null;
+    }
+    return stations.find((s) => (s.def?.itemIds || []).includes(base) && s.key !== CATCH_ALL_KEY)?.name || null;
+  };
+  return collectViewingNotes(viewing, {
+    itemText: (id) => items.find((i) => i.id === id)?.text || id,
+    stationOf,
+    stationOrder: stations.map((s) => s.name)
+  });
+}
+
+/** H2-02 看房後頁的「這間的所有筆記」卡：依站別列出，一鍵複製全部。 */
+function allNotesCard(cur) {
+  const viewing = state.viewings.find((v) => v.id === cur.id) || cur;
+  const notes = viewingNotesModel(viewing);
+  const text = allNotesText(notes, `${viewing.property_id} 看房筆記`);
+  const count = notes.groups.reduce((n, g) => n + g.entries.length, 0) + (notes.overall ? 1 : 0);
+  const pre = el("pre", { class: "all-notes-text", id: "allNotesText", text });
+  const msg = el("p", { class: "hint", id: "allNotesMsg" });
+  const copy = el("button", { type: "button", id: "copyAllNotes", text: "複製全部筆記" });
+  copy.onclick = async () => {
+    // RH2-02:按下時從最新資料重組,同一頁剛改的筆記也算進去
+    const fresh = state.viewings.find((v) => v.id === cur.id) || viewing;
+    const now = allNotesText(viewingNotesModel(fresh), `${fresh.property_id} 看房筆記`);
+    pre.textContent = now;
+    const r = await copyPlainText(now);
+    if (r.ok) {
+      msg.textContent = "已複製。";
+      return;
+    }
+    try {
+      const range = document.createRange?.();
+      if (range) {
+        range.selectNodeContents(pre);
+        const sel = window.getSelection?.();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+    } catch {
+      /* 選取失敗就只顯示提示 */
+    }
+    msg.textContent = "這個瀏覽器不讓程式複製，文字已選取，請長按選「拷貝」。";
+  };
+  return el("div", { class: "card all-notes", id: "allNotesCard" }, [
+    el("h3", { text: "這間的所有筆記" }),
+    count ? pre : el("p", { class: "hint", text: "還沒有筆記。每一題下面的「加筆記」和上面的整體筆記寫了就會出現在這裡。" }),
+    count ? copy : null,
+    msg
+  ]);
+}
+
 /** 一題的回答列：有選項的題目用一行大按鈕（點了馬上存），其他題型沿用原本的輸入方式。 */
 function choiceRow(i0, viewingId, { onSaved, prefill = null } = {}) {
   const i = displayItem(state, i0);
@@ -1264,12 +1396,12 @@ function choiceRow(i0, viewingId, { onSaved, prefill = null } = {}) {
       group.appendChild(b);
     }
     paint();
-    row = el("div", { class: "check-item stack", id: `item-${i.id}` }, [itemTitle(i, view()), group]);
+    row = el("div", { class: "check-item stack", id: `item-${i.id}` }, [itemTitle(i, view()), group, itemNoteBox(i.id, viewingId)]);
   } else if (i.phase === "看房後" && i.input_type === "text") {
     const box = el("textarea", { rows: "3", "data-id": i.id, placeholder: "寫下你的想法" });
     box.value = getRec().value ?? "";
     box.onchange = () => save(box.value.trim() ? "是" : "待核", box.value);
-    row = el("div", { class: "check-item stack", id: `item-${i.id}` }, [itemTitle(i, view(), false), box]);
+    row = el("div", { class: "check-item stack", id: `item-${i.id}` }, [itemTitle(i, view(), false), box, itemNoteBox(i.id, viewingId)]);
   } else {
     row = checklistRow(i, view(), onSaved, { stacked: true });
     row.id = `item-${i.id}`;
@@ -1534,6 +1666,7 @@ function visitOnsiteStep(cur, route = {}) {
       parkingBox
     ]),
     el("div", { class: "card" }, [el("h2", { text: "屋況 7 類快選" }), condGroup]),
+    overallNoteCard(cur.id),
     ...(routed
       ? [
           ...routeOverviewCard(cur, defs),
@@ -1620,7 +1753,11 @@ function visitResultStep(cur) {
       el("button", { type: "button", class: "big-btn", id: "resultEdit", text: "回去改答案" }),
       msg
     ]),
-    recMarksCard(cur)
+    overallNoteCard(cur.id, { id: "overallNoteResult" }),
+    allNotesCard(cur),
+    recMarksCard(cur),
+    recordingsCard(cur.id, { id: "recordingsCardResult" }),
+    transcriptCard(cur.id)
   ];
   return {
     nodes,
@@ -1654,6 +1791,142 @@ function visitResultStep(cur) {
   };
 }
 
+/**
+ * H2-03：錄音分段回聽、存到手機、刪除。每一段一列：播放（只讀這一段的分片）、存到手機、刪除這一段（兩段式確認）。
+ * 沒有任何錄音就不顯示。錄音中，正在錄的那一段不能播放或刪除。
+ */
+function recordingsCard(viewingId, { id = "recordingsCard" } = {}) {
+  const viewing = state.viewings.find((v) => v.id === viewingId);
+  if (!viewing) return null;
+  const chunks = (state.audioChunks || []).filter((c) => c.viewing_id === viewingId);
+  if (!chunks.length) return null;
+  const { groups, unassignedMarks } = groupRecordings(chunks, viewing.rec_marks);
+  const fmtTime = (iso) => {
+    const t = Date.parse(iso || "");
+    if (!Number.isFinite(t)) return "";
+    const d = new Date(t);
+    const two = (n) => String(n).padStart(2, "0");
+    return `${d.getMonth() + 1}/${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`;
+  };
+  const rowFor = (g) => {
+    const live = ui.recording && g.recording_id && g.recording_id === ui.activeRecordingId;
+    const msg = el("p", { class: "hint", "data-rec-msg": g.key });
+    const holder = el("div", { class: "rec-player", "data-rec-player": g.key });
+    const read = async () => {
+      const r = await ctrl.readRecordingBlob({ viewingId, chunkIds: g.chunkIds });
+      if (!r?.ok) {
+        msg.textContent = r?.error || "讀不到這一段錄音";
+        return null;
+      }
+      return r;
+    };
+    const play = el("button", { type: "button", "data-rec-play": g.key, disabled: live, text: ui.recPlayers[g.key] ? "停止播放" : "播放" });
+    play.onclick = async () => {
+      if (ui.recPlayers[g.key]) {
+        const pl = ui.recPlayers[g.key];
+        try {
+          pl.audio?.pause?.();
+          URL.revokeObjectURL(pl.url);
+        } catch {
+          /* ignore */
+        }
+        delete ui.recPlayers[g.key];
+        holder.textContent = "";
+        play.textContent = "播放";
+        return;
+      }
+      const r = await read();
+      if (!r) return;
+      const url = createPreviewUrl(r.blob);
+      if (!url) {
+        msg.textContent = "這個瀏覽器不能播放這段錄音。";
+        return;
+      }
+      const audio = el("audio", { controls: true, src: url });
+      ui.recPlayers[g.key] = { url, audio };
+      holder.textContent = "";
+      holder.appendChild(audio);
+      play.textContent = "停止播放";
+      try {
+        await audio.play?.();
+      } catch {
+        msg.textContent = "請按播放器上的播放鈕開始聽。";
+      }
+    };
+    const save = el("button", { type: "button", "data-rec-save": g.key, text: "存到手機" });
+    save.onclick = async () => {
+      const r = await read();
+      if (!r) return;
+      const prop = state.properties.find((p) => p.id === viewing.property_id);
+      const name = recordingFileName(prop?.id || viewing.property_id, g.startAt || viewing.recorded_at || viewing.start || "", g.n, r.mime);
+      const out = await deliverRecordingFile(r.blob, name);
+      if (out.ok) msg.textContent = out.how === "share" ? "已開啟分享,請選「儲存到檔案」。" : `已交給瀏覽器下載:${name}`;
+      else msg.textContent = "這個瀏覽器不能直接存檔。請先按「播放」,再長按播放器選存檔。";
+    };
+    const del = el("button", { type: "button", "data-rec-del": g.key, disabled: live, text: "刪除這段" });
+    let armed = null;
+    del.onclick = async () => {
+      if (!armed) {
+        del.textContent = "確定刪除?";
+        armed = setTimeout(() => {
+          armed = null;
+          del.textContent = "刪除這段";
+        }, 5000);
+        armed?.unref?.();
+        return;
+      }
+      clearTimeout(armed);
+      armed = null;
+      const r = await runCommand(() => ctrl.deleteRecording({ viewingId, recordingId: g.key, chunkIds: g.chunkIds, markIndexes: g.legacy ? g.marks.map((m) => m.index) : [] }));
+      if (r?.ok) render();
+    };
+    return el("div", { class: "rec-row", "data-rec-row": g.key }, [
+      el("strong", { text: recordingTitle(g, fmtTime(g.startAt)) }),
+      live ? el("p", { class: "hint", text: "這一段還在錄音,停止後才能播放或刪除。" }) : null,
+      g.marks.length ? el("ul", {}, g.marks.map((m) => el("li", { text: recMarkText(m) }))) : null,
+      el("div", { class: "row" }, [play, save, del]),
+      holder,
+      msg
+    ]);
+  };
+  return el("details", { class: "fold rec-card", id }, [
+    el("summary", { text: `錄音(${groups.length} 段)` }),
+    ...groups.map(rowFor),
+    unassignedMarks.length ? el("p", { class: "hint", text: `另有 ${unassignedMarks.length} 筆站別標記對不到哪一段錄音。` }) : null,
+    el("p", { class: "hint", text: "錄音只存在這支手機和加密備份裡,不會送到別處。刪掉就找不回來。" })
+  ]);
+}
+
+/** H2-04：看房後頁的逐字稿（沒有逐字稿就不顯示）。每筆可改，離開欄位自動存；可複製全文。 */
+function transcriptCard(viewingId) {
+  const viewing = state.viewings.find((v) => v.id === viewingId);
+  const rows = (state.transcripts || []).filter((t) => t.viewing_id === viewingId).sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+  if (!viewing || !rows.length) return null;
+  const msg = el("p", { class: "hint", id: "transcriptMsg" });
+  const copy = el("button", { type: "button", id: "copyTranscript", text: "複製全文" });
+  copy.onclick = async () => {
+    const cur = (state.transcripts || []).filter((t) => t.viewing_id === viewingId);
+    const r = await copyPlainText(joinTranscripts(cur));
+    msg.textContent = r.ok ? "已複製。" : "這個瀏覽器不讓程式複製,請在上面的框裡全選後手動複製。";
+  };
+  const list = rows.map((t) => {
+    const ta = el("textarea", { rows: "3", "data-transcript": t.id, maxlength: "20000" });
+    ta.value = t.text || "";
+    const saved = el("span", { class: "hint small", "data-transcript-saved": t.id });
+    ta.onchange = async () => {
+      const r = await runCommand(() => ctrl.editTranscript(t.id, ta.value), { keepNotices: true });
+      saved.textContent = r?.ok ? "已存" : "";
+    };
+    ta.oninput = () => {
+      saved.textContent = "";
+    };
+    const when = Date.parse(t.at);
+    const label = Number.isFinite(when) ? `${String(new Date(when).getHours()).padStart(2, "0")}:${String(new Date(when).getMinutes()).padStart(2, "0")}` : "";
+    return el("div", { class: "transcript-row" }, [el("span", { class: "hint small", text: label }), ta, saved]);
+  });
+  return el("details", { class: "fold", id: "transcriptCard" }, [el("summary", { text: `逐字稿(${rows.length} 段)` }), ...list, copy, msg]);
+}
+
 /** 看房後頁的「錄音段落」：錄音中換站記下的標記（例如「03:10 浴室 2」），方便之後回聽或轉文字時找到那一段。沒有標記就不顯示。 */
 function recMarksCard(cur) {
   const marks = Array.isArray(cur?.rec_marks) ? cur.rec_marks : [];
@@ -1668,8 +1941,11 @@ function recMarksCard(cur) {
 function visitPostStep(cur) {
   if (isFlagOn(cur.post_saved) && ui.visit.resultFor === cur.id && !ui.visit.editPost) return visitResultStep(cur);
   const { nodes } = visitPhaseNodes(cur, "看房後", "看房後");
+  nodes.push(overallNoteCard(cur.id, { id: "overallNotePost" }));
+  nodes.push(allNotesCard(cur));
   const marksCard = recMarksCard(cur);
   if (marksCard) nodes.push(marksCard);
+  nodes.push(recordingsCard(cur.id), transcriptCard(cur.id));
   const save = el("button", { type: "button", class: "primary", id: "savePost", text: "存檔並評分" });
   // 防漏清單（E5）：存檔之前，一定要再列一次整間（看房前、現場、看房後）還漏了哪些
   const missingAll = ui.visit.confirmSave ? computeMissing(cur, "all") : [];
@@ -2037,7 +2313,13 @@ function itemTitle(i, v, withHow = true) {
   return el("span", {}, kids);
 }
 
-function checklistRow(i0, v, onSaved, { stacked = false } = {}) {
+function checklistRow(i0, v, onSaved, opts = {}) {
+  const row = checklistRowBase(i0, v, onSaved, opts);
+  if (v && row) row.appendChild(itemNoteBox(displayItem(state, i0).id, v.id));
+  return row;
+}
+
+function checklistRowBase(i0, v, onSaved, { stacked = false } = {}) {
   const i = displayItem(state, i0); // 快照裡的題目沒帶操作說明與區域資料提示來源時，用目前方法包補上
   // 看一間的畫面用上下排（題目在上、填寫的格子在下，手機窄螢幕才有地方打字）；舊的現場頁維持左右排
   const rowClass = stacked ? "check-item stack" : "check-item";
@@ -2586,6 +2868,8 @@ function pagePropertyDetail(id) {
       el("a", { class: "btn", id: "detailPriceLog", href: `#price_log/${encodeURIComponent(id)}`, text: "問價紀錄" }),
       latest ? el("button", { type: "button", id: "openField", text: "開啟現場頁（進階）" }) : null
     ]),
+    latest ? overallNoteCard(latest.id, { id: "overallNoteProp" }) : null,
+    latest ? recordingsCard(latest.id, { id: "recordingsCardProp" }) : null,
     el("details", { class: "fold", id: "basicFold", open: true }, [
       el("summary", { text: "基本" }),
       input("pcode", "物件代號", { placeholder: "例如 A01，不要寫門牌" }),
@@ -2937,7 +3221,9 @@ async function toggleRec() {
     rec.media = mr;
     const bound = state.currentViewingId;
     rec.boundViewingId = bound;
-    ctrl.startRecording(bound);
+    const started = ctrl.startRecording(bound);
+    const recordingId = started?.recordingId || null;
+    ui.activeRecordingId = recordingId;
     mr.onerror = () => showError("錄音發生錯誤");
     mr.onstop = () => {
       const expected = !!ui._recStopExpected;
@@ -2951,7 +3237,7 @@ async function toggleRec() {
       if (!ev.data || ev.data.size === 0) return;
       ui.recChunks += 1;
       try {
-        const saved = await ctrl.addAudioChunk({ blob: ev.data, viewingId: bound });
+        const saved = await ctrl.addAudioChunk({ blob: ev.data, viewingId: bound, recordingId });
         if (saved && saved.ok === false) {
           // 控制器回的是 ok:false 而不是拋例外：一樣要讓你知道，並停止錄音，避免以為還在錄
           showError(`錄音分片保存失敗：${saved.error || "未知原因"}，已停止錄音`);
@@ -5092,7 +5378,15 @@ function siteItemRow(cur, st, item, { onSaved } = {}) {
         }
       };
       const note = el("input", { class: "problem-note", "data-note": item.id, placeholder: "一行備註（選填）", value: rec.note ?? "" });
-      note.onchange = () => save(rec.status ?? current, rec.value ?? current, { note: note.value.trim() });
+      note.onchange = async () => {
+        await save(rec.status ?? current, rec.value ?? current, { note: note.value.trim().slice(0, 2000) });
+        // RH2-03:同步更新同一題的「加筆記」欄與按鈕字
+        const row = note.closest?.("[data-problem]")?.parentElement;
+        const ta = row?.querySelector?.("textarea.item-note");
+        if (ta) ta.value = note.value.trim().slice(0, 2000);
+        const nb = row?.querySelector?.(".note-btn");
+        if (nb) nb.textContent = noteButtonText(note.value.trim().slice(0, 2000));
+      };
       kids.push(
         el("div", { class: "problem-box", "data-problem": item.id }, [
           el("p", { class: "hint", text: "這題有狀況：拍一張照片，再寫一行重點。" }),
@@ -5134,6 +5428,7 @@ function siteItemRow(cur, st, item, { onSaved } = {}) {
         })
       );
     }
+    if (!item.custom) kids.push(itemNoteBox(key, cur.id));
     kids.push(el("div", { class: "row item-actions" }, actions));
     if (naOpen) {
       const reason = el("input", { class: "na-reason", placeholder: item.core === true ? "寫一句原因（必做題一定要寫）" : "寫一句原因（選填）" });

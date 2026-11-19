@@ -698,3 +698,185 @@ export function errorLogText(list) {
 export function isBenignError(msg) {
   return /ResizeObserver loop/i.test(String(msg ?? ""));
 }
+
+// ---------------------------------------------------------------------------
+// H2 筆記、錄音回聽與逐字稿(app-v1.22.0)：純函式，畫面與測試共用
+// ---------------------------------------------------------------------------
+
+/** 每題筆記按鈕上的字：沒有筆記是「加筆記」，有就顯示前 20 字。 */
+export function noteButtonText(note) {
+  const t = String(note ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return "加筆記";
+  return t.length > 20 ? `筆記:${t.slice(0, 20)}…` : `筆記:${t}`;
+}
+
+/** 一間看房裡所有每題筆記加整體筆記，依站別整理。stationOrder 是站名順序；沒站別的歸「其他」。 */
+export function collectViewingNotes(viewing, { itemText = (id) => id, stationOf = () => null, stationOrder = [] } = {}) {
+  const overall = String(viewing?.overall_note ?? "").trim();
+  const buckets = new Map();
+  for (const [key, rec] of Object.entries(viewing?.responses || {})) {
+    if (rec?.aggregated === true) continue; // RH2-04:可重複站的彙整格是複本,不重複列
+    const note = typeof rec?.note === "string" ? rec.note.trim() : "";
+    if (!note) continue;
+    const base = String(key).split("@")[0];
+    const station = stationOf(key, base) || "其他";
+    if (!buckets.has(station)) buckets.set(station, []);
+    buckets.get(station).push({ id: key, text: String(itemText(base, key) || base), note });
+  }
+  const names = [...buckets.keys()];
+  const rank = (n) => {
+    if (n === "其他") return stationOrder.length + 1;
+    const i = stationOrder.indexOf(n);
+    return i < 0 ? stationOrder.length : i;
+  };
+  names.sort((a, b) => rank(a) - rank(b));
+  return { overall, groups: names.map((station) => ({ station, entries: buckets.get(station) })) };
+}
+
+/** 「複製全部筆記」的文字。 */
+export function allNotesText(notes, title = "") {
+  const lines = [];
+  if (title) lines.push(title);
+  if (notes.overall) lines.push("整體筆記", notes.overall, "");
+  for (const g of notes.groups) {
+    lines.push(`【${g.station}】`);
+    for (const e of g.entries) lines.push(`${e.text}:${e.note}`);
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
+const REC_GAP_MS = 30000;
+const REC_CHUNK_SEC = 5;
+
+function msOf(at) {
+  const t = Date.parse(String(at ?? ""));
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * 錄音分片分成一段一段。新資料用 recording_id 與 seq;
+ * 舊資料沒有 recording_id:依時間排序,相鄰兩片間隔超過 30 秒就切成新段;任何一片推不出時間就整批當一段。
+ * 站別標記:新標記帶 recording_id;舊標記沒有,秒數每段重算,依「秒數往回走就是新的一輪」切成幾輪,
+ * 輪數和舊段數相同才一一對上;只有一段就全給它;其他情況放進 unassignedMarks。
+ */
+export function groupRecordings(chunksMeta, marks = []) {
+  const chunks = (Array.isArray(chunksMeta) ? chunksMeta : []).filter((c) => c && typeof c === "object");
+  const markList = (Array.isArray(marks) ? marks : []).map((m, index) => ({ ...m, index }));
+  const byId = new Map();
+  const legacy = [];
+  for (const c of chunks) {
+    if (c.recording_id) {
+      if (!byId.has(c.recording_id)) byId.set(c.recording_id, []);
+      byId.get(c.recording_id).push(c);
+    } else legacy.push(c);
+  }
+  const groups = [];
+  const make = (list, recordingId, isLegacy) => {
+    const times = list.map((c) => msOf(c.at)).filter((t) => t !== null);
+    const start = times.length ? Math.min(...times) : null;
+    const end = times.length ? Math.max(...times) : null;
+    const mime = (list.find((c) => c.mime) || {}).mime || "";
+    return {
+      key: recordingId,
+      recording_id: isLegacy ? null : recordingId,
+      legacy: isLegacy,
+      chunkIds: list.map((c) => c.id),
+      chunkCount: list.length,
+      startAt: start === null ? null : new Date(start).toISOString(),
+      endAt: end === null ? null : new Date(end).toISOString(),
+      durationSec: start === null ? list.length * REC_CHUNK_SEC : Math.max(list.length * REC_CHUNK_SEC, Math.round((end - start) / 1000) + REC_CHUNK_SEC),
+      size: list.reduce((n, c) => n + (toFiniteNumber(c.size) ?? 0), 0),
+      mime,
+      marks: []
+    };
+  };
+  for (const [rid, list] of byId) {
+    list.sort((a, b) => (toFiniteNumber(a.seq) ?? 0) - (toFiniteNumber(b.seq) ?? 0) || (msOf(a.at) ?? 0) - (msOf(b.at) ?? 0));
+    groups.push(make(list, rid, false));
+  }
+  if (legacy.length) {
+    const timed = legacy.every((c) => msOf(c.at) !== null);
+    if (!timed) {
+      groups.push(make(legacy, `legacy-${legacy[0].id}`, true));
+    } else {
+      const sorted = [...legacy].sort((a, b) => msOf(a.at) - msOf(b.at));
+      let cur = [];
+      const flush = () => {
+        if (cur.length) groups.push(make(cur, `legacy-${cur[0].id}`, true));
+        cur = [];
+      };
+      for (const c of sorted) {
+        if (cur.length && msOf(c.at) - msOf(cur[cur.length - 1].at) > REC_GAP_MS) flush();
+        cur.push(c);
+      }
+      flush();
+    }
+  }
+  groups.sort((a, b) => (a.startAt ?? "") < (b.startAt ?? "") ? -1 : (a.startAt ?? "") > (b.startAt ?? "") ? 1 : 0);
+  const unassignedMarks = [];
+  const legacyGroups = groups.filter((g) => g.legacy);
+  const legacyMarks = [];
+  for (const m of markList) {
+    const g = m.recording_id ? groups.find((x) => x.recording_id === m.recording_id) : null;
+    if (g) g.marks.push(m);
+    else if (!m.recording_id) legacyMarks.push(m);
+    else unassignedMarks.push(m);
+  }
+  if (legacyMarks.length) {
+    if (legacyGroups.length === 1) legacyGroups[0].marks.push(...legacyMarks);
+    else {
+      const runs = [];
+      let last = -1;
+      for (const m of legacyMarks) {
+        const sec = toFiniteNumber(m.sec) ?? 0;
+        if (!runs.length || sec < last) runs.push([]);
+        runs[runs.length - 1].push(m);
+        last = sec;
+      }
+      if (legacyGroups.length > 1 && runs.length === legacyGroups.length) runs.forEach((run, i) => legacyGroups[i].marks.push(...run));
+      else unassignedMarks.push(...legacyMarks);
+    }
+  }
+  groups.forEach((g, i) => {
+    g.n = i + 1;
+  });
+  return { groups, unassignedMarks };
+}
+
+/** 音檔副檔名:webm 是 webm、mp4 是 m4a、其他是 bin。 */
+export function recordingExt(mime) {
+  const m = String(mime ?? "").toLowerCase();
+  if (m.includes("webm")) return "webm";
+  if (m.includes("mp4") || m.includes("m4a") || m.includes("aac")) return "m4a";
+  return "bin";
+}
+
+/** 下載檔名:看房錄音_<物件代號>_<日期>_第N段.<副檔名>。代號與日期裡不合檔名的字元換成底線。 */
+export function recordingFileName(propertyId, dateIso, n, mime) {
+  const safe = (t) => String(t ?? "").replace(/[\/:*?"<>|\s]+/g, "_").slice(0, 40) || "x";
+  const day = String(dateIso ?? "").slice(0, 10) || "未知日期";
+  return `看房錄音_${safe(propertyId)}_${safe(day)}_第${n}段.${recordingExt(mime)}`;
+}
+
+/** 一段錄音那一列的文字:第 N 段 開始時間 長度約 M 分(分片數)。 */
+export function recordingTitle(g, timeText = "") {
+  const min = g.durationSec < 60 ? "不到 1" : String(Math.round(g.durationSec / 60));
+  return `第 ${g.n} 段　${timeText || "時間不明"}　長度約 ${min} 分(${g.chunkCount} 片)`;
+}
+
+/** 逐字稿依時間串接(原本的行為是直接接起來,不加分隔)。 */
+export function joinTranscripts(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((r, i) => ({ r, i, t: msOf(r?.at) }))
+    .sort((a, b) => (a.t ?? 0) - (b.t ?? 0) || a.i - b.i)
+    .map((x) => String(x.r?.text ?? ""))
+    .join("");
+}
+
+/** 存音檔的方式:瀏覽器支援下載連結就下載;不行(例如部分 iOS)改用系統分享;都不行就請使用者播放後長按存檔。 */
+export function chooseRecordingDelivery({ hasDownload = false, canShareFiles = false } = {}) {
+  if (hasDownload) return "download";
+  if (canShareFiles) return "share";
+  return "manual";
+}
